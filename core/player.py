@@ -505,156 +505,38 @@ class PlayerManager:
             # Detect stream modes
             mode = "audio" if getattr(song, "quality", "") == "audio" else "video"
 
-            # Retrieve or Download local cached file
-            local_file = None
-            if not is_seek:
-                # Update UI to downloading status
-                status_msg_id = self.active_message_id.get(chat_id)
-                start_time = time.time()
-                last_edit_time = [0.0]
-                last_pct = [-1]
-                async def progress_cb(pct, down, tot):
-                    print(f"[Player DEBUG] progress_cb: pct={pct}, down={down}, tot={tot}, msg_id={status_msg_id}, app={self.app is not None}")
-                    now = time.time()
-                    if now - last_edit_time[0] >= 3.5 or (pct - last_pct[0] >= 10 and pct > 0) or pct == 100:
-                        last_edit_time[0] = now
-                        last_pct[0] = pct
-                        if status_msg_id and self.app:
-                            elapsed = time.time() - start_time
-                            if elapsed <= 0:
-                                elapsed = 0.01
-                            speed_bps = down / elapsed
-                            speed_mb = speed_bps / (1024 * 1024)
-                            down_mb = down / (1024 * 1024)
-                            
-                            if tot > 0:
-                                tot_mb = tot / (1024 * 1024)
-                                remaining_bytes = tot - down
-                                seconds_left = max(0, int(remaining_bytes / speed_bps)) if speed_bps > 0 else 0
-                                time_left_str = f"{seconds_left}s"
-                                filled = int(pct / 10)
-                                bar = "■" * filled + "□" * (10 - filled)
-                                progress_str = f"<code>[{bar}] {pct}%</code>"
-                                size_str = f"‣ <b>Sɪᴢᴇ :</b> <code>{down_mb:.1f} MB / {tot_mb:.1f} MB</code>"
-                            else:
-                                time_left_str = "calculating..."
-                                progress_str = "<code>[DOWNLOADING...]</code>"
-                                size_str = f"‣ <b>Sɪᴢᴇ :</b> <code>{down_mb:.1f} MB / calculating...</code>"
-                            
-                            caption = (
-                                "<b>GᴀᴍᴇOᴠᴇʀ Mᴏᴠɪᴇ Hᴜʙ</b>\n\n"
-                                "<b>Pʀᴏᴄᴇssɪɴɢ Mᴇᴅɪᴀ...</b>\n\n"
-                                f"‣ <b>Tɪᴛʟᴇ :</b> <code>{song.title}</code>\n"
-                                f"{progress_str}\n"
-                                f"{size_str}\n"
-                                f"‣ <b>Sᴘᴇᴇᴅ :</b> <code>{speed_mb:.1f} MB/s</code>\n"
-                                f"‣ <b>Rᴇᴍᴀɪɴɪɴɢ :</b> <code>{time_left_str}</code>"
-                            )
-                            try:
-                                await self.app.edit_message_caption(
-                                    chat_id=chat_id,
-                                    message_id=status_msg_id,
-                                    caption=caption,
-                                    parse_mode=enums.ParseMode.HTML
-                                )
-                            except Exception as e_caption:
-                                try:
-                                    await self.app.edit_message_text(
-                                        chat_id=chat_id,
-                                        message_id=status_msg_id,
-                                        text=caption,
-                                        parse_mode=enums.ParseMode.HTML
-                                    )
-                                except Exception as e_text:
-                                    print(f"[Player DEBUG] edit failed: caption_err={e_caption}, text_err={e_text}")
-                
-                local_file = await download_song(song, mode=mode, progress_callback=progress_cb)
-                if not local_file:
-                    raise Exception("Caching failed. Downloader could not retrieve file.")
-                
-                # Cleanup previous file of the group before playing
-                old_local = self.local_files.pop(chat_id, None)
-                if old_local:
-                    asyncio.create_task(delayed_clean_cached_file(old_local, delay=get_cleanup_delay(song)))
-                    
-                self.local_files[chat_id] = local_file
-            else:
-                local_file = self.local_files.get(chat_id)
-                if not local_file or not os.path.exists(local_file):
-                    raise Exception("Seek failed. Local cache is missing.")
+            target_url = song.video_url or song.audio_url
+            if not target_url:
+                raise Exception("No video or audio stream URL found for this title.")
+
+            download_headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+                "Origin": "https://themoviebox.org",
+                "Referer": "https://themoviebox.org/",
+            }
+
+            # Check if target is a local file or direct stream URL
+            is_local = os.path.exists(target_url)
+            media_path = target_url
+            headers = None if is_local else download_headers
 
             # ── PyTgCalls Media Stream Setup ──
             seek_val = self.current_seek_offset.get(chat_id, 0)
-            seek_str = f"-ss {seek_val} " if seek_val > 0 else ""
+            ffmpeg_params = f"-ss {seek_val}" if seek_val > 0 else None
 
-            # Locks Video Parameters: 1080p @ 60 FPS (FHD 60fps)
-            vid_params = VideoParameters(width=1920, height=1080, frame_rate=60)
-            
-            # ── Audio Filter Chain ───────────────────────────────────────────────
-            # AUDIO-ONLY: Clean Bass Boost — Smooth, No Glitch, No Pop/Distortion
-            #
-            #  bass=g=4:f=100:w=0.5
-            #    → Gentle +4dB bass lowshelf at 100Hz (punchy, not overloaded)
-            #    → g=4 safe even at PyTgCalls volume=200 (no clipping)
-            #    → w=0.5 tight band = punchy, not muddy
-            #
-            #  acompressor=threshold=0.5:ratio=3:attack=8:release=80:makeup=1.5
-            #    → Soft smooth compression: squeezes peaks, boosts quieter parts
-            #    → attack=8ms (not too fast = no pumping artifact/pop)
-            #    → release=80ms (slow enough to not cause breathing/pumping)
-            #    → makeup=1.5 = +3.5dB loudness gain after compression
-            #    → UNLIKE dynaudnorm: no sudden volume jumps = no 'put' sound
-            #
-            #  alimiter=limit=0.85:level=1
-            #    → Hard safety ceiling at 0.85 (-1.4dBFS)
-            #    → Transparent when not limiting, catches any peaks
-            #    → PREVENTS clipping/distortion even at PyTgCalls volume=200
-            #
-            #  aresample=48000
-            #    → Hard 48kHz (Telegram required), zero sync drift
-            if mode == "audio":
-                # Music mode: gentle bass boost + loudness leveling. No async resampling (causes drift)
-                audio_filter = (
-                    '-af "bass=g=4:f=100:w=0.5,'
-                    'acompressor=threshold=0.5:ratio=3:attack=8:release=80:makeup=1.5,'
-                    'alimiter=limit=0.85:level=1,'
-                    'aresample=48000"'
-                )
-            else:
-                # Movie/VOD mode: Pure crystal clear cinema dialogue boost + peak limiter to stop garbled audio
-                audio_filter = (
-                    '-af "highpass=f=45,'
-                    'equalizer=f=120:g=2:w=0.8,equalizer=f=3200:g=2.5:w=1.0,'
-                    'acompressor=threshold=-16dB:ratio=2.5:attack=10:release=100:makeup=2dB,'
-                    'volume=1.4,alimiter=limit=0.92:level=1,'
-                    'aresample=48000"'
-                )
+            # Standard optimal HD 720p @ 30 FPS for smooth WebRTC video streaming without VPS CPU overload
+            vid_params = VideoParameters(width=1280, height=720, frame_rate=30)
 
             def get_stream(video_required: bool = True):
                 v_flags = MediaStream.Flags.REQUIRED if video_required else MediaStream.Flags.IGNORE
-                if video_required:
-                    # Constrained H.264 zerolatency WebRTC encoding: locks bitrate to 3.5Mbps, 1.0x+ speed, zero CPU lag
-                    base_flags = (
-                        f"--base ---start {seek_str}-fflags +genpts -analyzeduration 4M -probesize 4M -threads 4 -thread_queue_size 1024 "
-                    )
-                    video_ffmpeg_flags = ""
-                else:
-                    base_flags = f"--base ---start {seek_str}-analyzeduration 2M -probesize 2M -threads 2 -thread_queue_size 512 "
-                    video_ffmpeg_flags = ""
-
-                return SeekableMediaStream(
-                    media_path=local_file,
-                    audio_path=None,  # Single local unified container file
+                return MediaStream(
+                    media_path=media_path,
+                    headers=headers,
                     video_parameters=vid_params,
                     audio_parameters=AudioQuality.HIGH,
                     video_flags=v_flags,
                     audio_flags=MediaStream.Flags.REQUIRED,
-                    headers=None,
-                    ffmpeg_parameters=(
-                        f"{base_flags}"
-                        f"{video_ffmpeg_flags}"
-                        f"--audio ---mid {audio_filter} -max_muxing_queue_size 2048"
-                    )
+                    ffmpeg_parameters=ffmpeg_params
                 )
 
             stream = get_stream(video_required=(mode == "video"))
@@ -666,26 +548,17 @@ class PlayerManager:
                 except Exception:
                     pass
                 
+                print(f"[Player] Starting PyTgCalls play for '{song.title}' in chat {chat_id}...")
                 await self._pytg.play(chat_id, stream)
+                print(f"[Player] Successfully started stream in chat {chat_id}!")
             except Exception as play_err:
                 err_str = str(play_err).lower()
                 if "no video source found" in err_str:
-                    print(f"[Player] No video source found in {local_file}. Aborting play as video is strictly required.")
-                    if self.app:
-                        try:
-                            await self.app.send_message(chat_id, "<b>No video stream found in this file! Playback aborted as video is required.</b>")
-                        except Exception:
-                            pass
-                    queue_manager.clear(chat_id)
-                    # Delete the invalid file immediately
-                    if os.path.exists(local_file):
-                        try:
-                            os.remove(local_file)
-                        except Exception:
-                            pass
-                    return False
+                    print(f"[Player] No video source found in stream. Trying audio-only...")
+                    stream = get_stream(video_required=False)
+                    await self._pytg.play(chat_id, stream)
                 else:
-                    print(f"[Player] Play failed: {play_err}. Attempting to force start group call...")
+                    print(f"[Player] Play failed: {play_err}. Checking group call...")
                     try:
                         from pyrogram.raw.functions.phone import CreateGroupCall
                         import random
@@ -708,14 +581,13 @@ class PlayerManager:
                                     )
                                 )
                                 print(f"[Player] Bot auto-started group call in chat {chat_id}")
-                        # Wait 1.5 seconds for the call to be created in Telegram servers
+                        # Wait 1.5 seconds for call to initialize
                         await asyncio.sleep(1.5)
                         try:
                             await self._pytg.play(chat_id, stream)
                             print("[Player] Play succeeded after auto-starting group call!")
                         except Exception as retry_play_err:
-                            retry_play_err_str = str(retry_play_err).lower()
-                            if "no video source found" in retry_play_err_str:
+                            if "no video source found" in str(retry_play_err).lower():
                                 print(f"[Player] Retry play failed due to missing video. Trying audio-only...")
                                 stream = get_stream(video_required=False)
                                 await self._pytg.play(chat_id, stream)
@@ -725,7 +597,17 @@ class PlayerManager:
                     except Exception as retry_err:
                         print(f"[Player] Retry play failed: {retry_err}")
                         queue_manager.clear(chat_id)
+                        if self.app:
+                            try:
+                                await self.app.send_message(
+                                    chat_id,
+                                    "<b>Voice Chat Active Nahi Hai!</b>\n\n"
+                                    "Kripya group mein pehle <b>Video/Voice Chat start karein</b> aur bot ko admin banayein, phir <code>/movie</code> chalayein!"
+                                )
+                            except Exception:
+                                pass
                         return False
+
 
             # Delete old Now Playing card before playing the new track
             old_msg_id = self.active_message_id.pop(chat_id, None)

@@ -146,22 +146,15 @@ async def select_vod_item(chat_id: int, item: SearchResultsItem, status_msg, use
 
 
 async def show_loading_animation(chat_id: int, base_text: str) -> tuple:
-    """Creates a message and animates loading dots for smooth, responsive UX."""
+    """Sends a fast loading message immediately without artificial lag."""
     from bot import send_styled
     msg_data = await send_styled(
         chat_id=chat_id,
-        text=f"{HEADER}<b>{base_text}</b>"
+        text=f"{HEADER}<b>{base_text}...</b>"
     )
     msg_id = msg_data.get("result", {}).get("message_id")
-    msg_tuple = (chat_id, msg_id)
-    
-    # Run a quick 1.5-second dots animation
-    for i in range(1, 4):
-        await asyncio.sleep(0.4)
-        dots = "." * i
-        await safe_edit(msg_tuple, f"{HEADER}<b>{base_text}{dots}</b>")
-        
-    return msg_tuple
+    return (chat_id, msg_id)
+
 
 
 async def get_trending_movies_panel(allowed_uid: int) -> tuple:
@@ -925,59 +918,6 @@ async def trigger_movie_playback(msg_or_query, session_data: dict, season: int =
         # Check if already playing - Queue if needed
         is_playing = queue_manager.is_playing(chat_id)
         if is_playing and not is_next:
-            start_time = time.time()
-            last_edit_time = [0.0]
-            last_pct = [-1]
-            async def progress_cb(pct, downloaded, total_size):
-                now = time.time()
-                if now - last_edit_time[0] >= 3.5 or (pct - last_pct[0] >= 10 and pct > 0) or pct == 100:
-                    last_edit_time[0] = now
-                    last_pct[0] = pct
-                    elapsed = time.time() - start_time
-                    if elapsed == 0:
-                        elapsed = 0.01
-                    speed_bps = downloaded / elapsed
-                    speed_mb = speed_bps / (1024 * 1024)
-                    downloaded_mb = downloaded / (1024 * 1024)
-                    
-                    if total_size > 0:
-                        total_size_mb = total_size / (1024 * 1024)
-                        remaining_bytes = total_size - downloaded
-                        seconds_left = max(0, int(remaining_bytes / speed_bps)) if speed_bps > 0 else 0
-                        time_left_str = f"{seconds_left}s"
-                        filled = int(pct / 10)
-                        bar = "■" * filled + "□" * (10 - filled)
-                        progress_str = f"<code>[{bar}] {pct}%</code>"
-                        size_str = f"‣ <b>Sɪᴢᴇ :</b> <code>{downloaded_mb:.1f} MB / {total_size_mb:.1f} MB</code>"
-                    else:
-                        time_left_str = "calculating..."
-                        progress_str = "<code>[DOWNLOADING...]</code>"
-                        size_str = f"‣ <b>Sɪᴢᴇ :</b> <code>{downloaded_mb:.1f} MB / calculating...</code>"
-                        
-                    try:
-                        await safe_edit(
-                            message,
-                            f"{HEADER}"
-                            f"<b>Pʀᴏᴄᴇssɪɴɢ Mᴇᴅɪᴀ (Qᴜᴇᴜᴇ)...</b>\n\n"
-                            f"‣ <b>Tɪᴛʟᴇ :</b> <code>{song.title}</code>\n"
-                            f"{progress_str}\n"
-                            f"{size_str}\n"
-                            f"‣ <b>Sᴘᴇᴇᴅ :</b> <code>{speed_mb:.1f} MB/s</code>\n"
-                            f"‣ <b>Rᴇᴍᴀɪɴɪɴɢ :</b> <code>{time_left_str}</code>"
-                        )
-                    except Exception:
-                        pass
-
-            from core.downloader import download_song
-            local_file = await download_song(song, mode="video", progress_callback=progress_cb)
-            if not local_file:
-                await safe_edit(
-                    message,
-                    f"{HEADER}<b>Error: Failed to download track cache.</b>"
-                )
-                return
-                
-            stream_manager.local_files[chat_id] = local_file
             pos = queue_manager.add(chat_id, song)
             from plugins.controls import control_buttons
             await safe_edit(
@@ -990,6 +930,7 @@ async def trigger_movie_playback(msg_or_query, session_data: dict, season: int =
                 reply_markup=control_buttons()
             )
             return
+
 
         if is_series:
             session_data["chosen_season"] = season
