@@ -13,7 +13,8 @@ from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, 
 from config import Config
 from core.queue_manager import queue_manager
 from core.player import (
-    stream_manager, STAR, SKIP, QUEUE, CLOCK, LINK, USER, TRASH, WARN, INFO, WAVE, SLEEP, PLAY
+    stream_manager, edit_styled_caption, apply_styled_buttons,
+    STAR, SKIP, QUEUE, CLOCK, LINK, USER, TRASH, WARN, INFO, WAVE, SLEEP, PLAY
 )
 from core.vod_scraper import SubjectType
 
@@ -77,12 +78,54 @@ def get_rich_control_buttons(chat_id: int, is_paused: bool = False, played_secs:
         bar_str = "🔘─────────"
 
     progress_btn = InlineKeyboardButton(f"{played_str} {bar_str} {total_str}", callback_data=f"play_progress_{chat_id}")
-    close_btn = InlineKeyboardButton("CLOSE", callback_data=f"play_close_{chat_id}", style="danger")
+    options_btn = InlineKeyboardButton("O P T I O N S", callback_data=f"play_options_{chat_id}", style="primary")
+    close_btn = InlineKeyboardButton("C L O S E", callback_data=f"play_close_{chat_id}", style="danger")
 
     return InlineKeyboardMarkup([
         [btn_play, btn_pause, btn_replay, btn_skip, btn_stop],
         [progress_btn],
-        [close_btn]
+        [options_btn, close_btn]
+    ])
+
+
+def get_options_menu_buttons(chat_id: int, current_speed: float = 1.0, is_series: bool = False) -> InlineKeyboardMarkup:
+    """Returns styled options menu panel with quick jumps, speed controls, series nav, and return buttons."""
+    # Row 1: Quick Movie Jumps (4 equal-width buttons)
+    jump_m10 = InlineKeyboardButton("- 10s", callback_data=f"opt_seek_{chat_id}_-10", style="primary")
+    jump_p10 = InlineKeyboardButton("+ 10s", callback_data=f"opt_seek_{chat_id}_10", style="primary")
+    jump_m3m = InlineKeyboardButton("- 3ᴍ", callback_data=f"opt_seek_{chat_id}_-180", style="primary")
+    jump_p3m = InlineKeyboardButton("+ 3ᴍ", callback_data=f"opt_seek_{chat_id}_180", style="primary")
+    row_jumps = [jump_m10, jump_p10, jump_m3m, jump_p3m]
+
+    # Row 2: Playback Speed (4 equal-width buttons with active green indicator)
+    speeds = [0.75, 1.0, 1.25, 1.5]
+    row_speed = []
+    for spd in speeds:
+        if abs(spd - current_speed) < 0.01:
+            row_speed.append(InlineKeyboardButton(f"• {spd}x •", callback_data=f"opt_speed_{chat_id}_{spd}", style="success"))
+        else:
+            row_speed.append(InlineKeyboardButton(f"{spd}x", callback_data=f"opt_speed_{chat_id}_{spd}", style="primary"))
+
+    # Row 3: Series Navigator or Movie Restart
+    if is_series:
+        btn_prev = InlineKeyboardButton("◀ Pʀᴇᴠ Eᴘ", callback_data=f"opt_ep_prev_{chat_id}", style="primary")
+        btn_eps = InlineKeyboardButton("Eᴘɪsᴏᴅᴇs", callback_data=f"opt_ep_list_{chat_id}", style="primary")
+        btn_next = InlineKeyboardButton("Nᴇxᴛ Eᴘ ▶", callback_data=f"opt_ep_next_{chat_id}", style="primary")
+        row_nav = [btn_prev, btn_eps, btn_next]
+    else:
+        btn_restart = InlineKeyboardButton("↺ Sᴛᴀʀᴛ Oᴠᴇʀ", callback_data=f"opt_restart_{chat_id}", style="primary")
+        row_nav = [btn_restart]
+
+    # Row 4: Return & Close
+    btn_back = InlineKeyboardButton("◀ Bᴀᴄᴋ", callback_data=f"opt_back_{chat_id}", style="success")
+    btn_close = InlineKeyboardButton("C L O S E", callback_data=f"play_close_{chat_id}", style="danger")
+    row_close = [btn_back, btn_close]
+
+    return InlineKeyboardMarkup([
+        row_jumps,
+        row_speed,
+        row_nav,
+        row_close
     ])
 
 
@@ -311,7 +354,7 @@ def register(app: Client):
             parse_mode=enums.ParseMode.HTML
         )
 
-    @app.on_callback_query(filters.regex(r"^(help_|play_|vcplay_|about_)"))
+    @app.on_callback_query(filters.regex(r"^(help_|play_|vcplay_|about_|opt_)"))
     async def handle_callbacks(client: Client, callback_query: CallbackQuery):
         try:
             await callback_query.answer()
@@ -325,7 +368,7 @@ def register(app: Client):
         current  = queue_manager.get_current(chat_id)
 
         # Admin controls gate
-        if data.startswith("play_") and not data.startswith("play_close"):
+        if (data.startswith("play_") or data.startswith("opt_")) and not data.startswith("play_close"):
             if current and getattr(current, "requester_id", 0) != 0:
                 req_id = current.requester_id
                 if user.id != req_id:
@@ -502,24 +545,11 @@ def register(app: Client):
                 await stream_manager.seek(chat_id, seconds)
                 
                 is_paused = chat_id in stream_manager.paused_time
-                now = asyncio.get_event_loop().time()
-                start = stream_manager.stream_start_time.get(chat_id, now)
-                offset = stream_manager.current_seek_offset.get(chat_id, 0)
-                elapsed = int((stream_manager.paused_time[chat_id] if is_paused else now) - start + offset)
+                elapsed = stream_manager.get_elapsed_seconds(chat_id)
                 total_sec = current.duration_secs if current and current.duration_secs else 0
-                
-                if callback_query.message.photo:
-                    await callback_query.message.edit_caption(
-                        caption=get_rich_caption(current, played_secs=elapsed),
-                        reply_markup=get_rich_control_buttons(chat_id, is_paused=is_paused, played_secs=elapsed, total_secs=total_sec),
-                        parse_mode=enums.ParseMode.HTML
-                    )
-                else:
-                    await callback_query.message.edit_text(
-                        text=get_rich_caption(current, played_secs=elapsed),
-                        reply_markup=get_rich_control_buttons(chat_id, is_paused=is_paused, played_secs=elapsed, total_secs=total_sec),
-                        parse_mode=enums.ParseMode.HTML
-                    )
+                kb = get_rich_control_buttons(chat_id, is_paused=is_paused, played_secs=elapsed, total_secs=total_sec)
+                caption = get_rich_caption(current, played_secs=elapsed)
+                await edit_styled_caption(chat_id, callback_query.message.id, caption, kb)
             except Exception as e:
                 print(f"[Controls] Seek callback error: {e}")
                 await callback_query.answer("Seek failed", show_alert=True)
@@ -534,18 +564,9 @@ def register(app: Client):
             elapsed = 0
             is_paused = chat_id in stream_manager.paused_time
             total_sec = current.duration_secs if current and current.duration_secs else 0
-            if callback_query.message.photo:
-                await callback_query.message.edit_caption(
-                    caption=get_rich_caption(current, played_secs=elapsed),
-                    reply_markup=get_rich_control_buttons(chat_id, is_paused=is_paused, played_secs=elapsed, total_secs=total_sec),
-                    parse_mode=enums.ParseMode.HTML
-                )
-            else:
-                await callback_query.message.edit_text(
-                    text=get_rich_caption(current, played_secs=elapsed),
-                    reply_markup=get_rich_control_buttons(chat_id, is_paused=is_paused, played_secs=elapsed, total_secs=total_sec),
-                    parse_mode=enums.ParseMode.HTML
-                )
+            kb = get_rich_control_buttons(chat_id, is_paused=is_paused, played_secs=elapsed, total_secs=total_sec)
+            caption = get_rich_caption(current, played_secs=elapsed)
+            await edit_styled_caption(chat_id, callback_query.message.id, caption, kb)
             return
 
         elif data.startswith("play_progress"):
@@ -653,20 +674,11 @@ def register(app: Client):
                 await callback_query.answer("Resumed" if success else "Failed")
                 if success:
                     try:
-                        elapsed = int(asyncio.get_event_loop().time() - stream_manager.stream_start_time.get(chat_id, asyncio.get_event_loop().time()) + stream_manager.current_seek_offset.get(chat_id, 0))
+                        elapsed = stream_manager.get_elapsed_seconds(chat_id)
                         total_sec = current.duration_secs if current and current.duration_secs else 0
-                        if callback_query.message.photo:
-                            await callback_query.message.edit_caption(
-                                caption=get_rich_caption(current, played_secs=elapsed),
-                                reply_markup=get_rich_control_buttons(chat_id, is_paused=False, played_secs=elapsed, total_secs=total_sec),
-                                parse_mode=enums.ParseMode.HTML
-                            )
-                        else:
-                            await callback_query.message.edit_text(
-                                get_rich_caption(current, played_secs=elapsed),
-                                reply_markup=get_rich_control_buttons(chat_id, is_paused=False, played_secs=elapsed, total_secs=total_sec),
-                                parse_mode=enums.ParseMode.HTML
-                            )
+                        kb = get_rich_control_buttons(chat_id, is_paused=False, played_secs=elapsed, total_secs=total_sec)
+                        caption = get_rich_caption(current, played_secs=elapsed)
+                        await edit_styled_caption(chat_id, callback_query.message.id, caption, kb)
                     except Exception:
                         pass
             else:
@@ -674,20 +686,11 @@ def register(app: Client):
                 await callback_query.answer("Paused" if success else "Failed")
                 if success:
                     try:
-                        elapsed = int(stream_manager.paused_time.get(chat_id, asyncio.get_event_loop().time()) - stream_manager.stream_start_time.get(chat_id, asyncio.get_event_loop().time()) + stream_manager.current_seek_offset.get(chat_id, 0))
+                        elapsed = stream_manager.get_elapsed_seconds(chat_id)
                         total_sec = current.duration_secs if current and current.duration_secs else 0
-                        if callback_query.message.photo:
-                            await callback_query.message.edit_caption(
-                                caption=get_rich_caption(current, played_secs=elapsed),
-                                reply_markup=get_rich_control_buttons(chat_id, is_paused=True, played_secs=elapsed, total_secs=total_sec),
-                                parse_mode=enums.ParseMode.HTML
-                            )
-                        else:
-                            await callback_query.message.edit_text(
-                                get_rich_caption(current, played_secs=elapsed),
-                                reply_markup=get_rich_control_buttons(chat_id, is_paused=True, played_secs=elapsed, total_secs=total_sec),
-                                parse_mode=enums.ParseMode.HTML
-                            )
+                        kb = get_rich_control_buttons(chat_id, is_paused=True, played_secs=elapsed, total_secs=total_sec)
+                        caption = get_rich_caption(current, played_secs=elapsed)
+                        await edit_styled_caption(chat_id, callback_query.message.id, caption, kb)
                     except Exception:
                         pass
 
@@ -699,24 +702,132 @@ def register(app: Client):
             await callback_query.answer("Resumed" if success else "Failed")
             if success:
                 try:
-                    elapsed = int(asyncio.get_event_loop().time() - stream_manager.stream_start_time.get(chat_id, asyncio.get_event_loop().time()) + stream_manager.current_seek_offset.get(chat_id, 0))
+                    elapsed = stream_manager.get_elapsed_seconds(chat_id)
                     total_sec = current.duration_secs if current and current.duration_secs else 0
-                    if callback_query.message.photo:
-                        await callback_query.message.edit_caption(
-                            caption=get_rich_caption(current, played_secs=elapsed),
-                            reply_markup=get_rich_control_buttons(chat_id, is_paused=False, played_secs=elapsed, total_secs=total_sec),
-                            parse_mode=enums.ParseMode.HTML
-                        )
-                    else:
-                        await callback_query.message.edit_text(
-                            get_rich_caption(current, played_secs=elapsed),
-                            reply_markup=get_rich_control_buttons(chat_id, is_paused=False, played_secs=elapsed, total_secs=total_sec),
-                            parse_mode=enums.ParseMode.HTML
-                        )
+                    kb = get_rich_control_buttons(chat_id, is_paused=False, played_secs=elapsed, total_secs=total_sec)
+                    caption = get_rich_caption(current, played_secs=elapsed)
+                    await edit_styled_caption(chat_id, callback_query.message.id, caption, kb)
                 except Exception:
                     pass
 
+        elif data.startswith("play_options_"):
+            if not current:
+                await callback_query.answer("Nothing is playing!", show_alert=True)
+                return
+            stream_manager.menu_active[chat_id] = True
+            curr_spd = stream_manager.current_speed.get(chat_id, 1.0)
+            is_series = bool(getattr(current, "season", 0) or getattr(current, "episode", 0))
+            opts_kb = get_options_menu_buttons(chat_id, current_speed=curr_spd, is_series=is_series)
+            elapsed = stream_manager.get_elapsed_seconds(chat_id)
+            caption = get_rich_caption(current, played_secs=elapsed)
+            await edit_styled_caption(chat_id, callback_query.message.id, caption, opts_kb)
+            await callback_query.answer("Options panel opened.")
+            return
+
+        elif data.startswith("opt_back_"):
+            stream_manager.menu_active[chat_id] = False
+            if not current:
+                await callback_query.answer("Nothing is playing!", show_alert=True)
+                return
+            elapsed = stream_manager.get_elapsed_seconds(chat_id)
+            total_sec = current.duration_secs if current and current.duration_secs else 0
+            is_paused = chat_id in stream_manager.paused_time
+            main_kb = get_rich_control_buttons(chat_id, is_paused=is_paused, played_secs=elapsed, total_secs=total_sec)
+            caption = get_rich_caption(current, played_secs=elapsed)
+            await edit_styled_caption(chat_id, callback_query.message.id, caption, main_kb)
+            await callback_query.answer("Returned to player.")
+            return
+
+        elif data.startswith("opt_seek_"):
+            if not current:
+                await callback_query.answer("Nothing is playing!", show_alert=True)
+                return
+            parts = data.split("_")
+            seconds = int(parts[3])
+            sign = "+" if seconds > 0 else ""
+            await callback_query.answer(f"Seeking {sign}{seconds}s...")
+            await stream_manager.seek(chat_id, seconds)
+            
+            curr_spd = stream_manager.current_speed.get(chat_id, 1.0)
+            is_series = bool(getattr(current, "season", 0) or getattr(current, "episode", 0))
+            opts_kb = get_options_menu_buttons(chat_id, current_speed=curr_spd, is_series=is_series)
+            elapsed = stream_manager.get_elapsed_seconds(chat_id)
+            caption = get_rich_caption(current, played_secs=elapsed)
+            await edit_styled_caption(chat_id, callback_query.message.id, caption, opts_kb)
+            return
+
+        elif data.startswith("opt_speed_"):
+            if not current:
+                await callback_query.answer("Nothing is playing!", show_alert=True)
+                return
+            parts = data.split("_")
+            target_speed = float(parts[3])
+            await callback_query.answer(f"Playback speed: {target_speed}x")
+            await stream_manager.set_speed(chat_id, target_speed)
+            
+            is_series = bool(getattr(current, "season", 0) or getattr(current, "episode", 0))
+            opts_kb = get_options_menu_buttons(chat_id, current_speed=target_speed, is_series=is_series)
+            elapsed = stream_manager.get_elapsed_seconds(chat_id)
+            caption = get_rich_caption(current, played_secs=elapsed)
+            await edit_styled_caption(chat_id, callback_query.message.id, caption, opts_kb)
+            return
+
+        elif data.startswith("opt_restart_"):
+            if not current:
+                await callback_query.answer("Nothing is playing!", show_alert=True)
+                return
+            await callback_query.answer("Restarting from beginning...")
+            await stream_manager.seek(chat_id, -999999)
+            curr_spd = stream_manager.current_speed.get(chat_id, 1.0)
+            is_series = bool(getattr(current, "season", 0) or getattr(current, "episode", 0))
+            opts_kb = get_options_menu_buttons(chat_id, current_speed=curr_spd, is_series=is_series)
+            caption = get_rich_caption(current, played_secs=0)
+            await edit_styled_caption(chat_id, callback_query.message.id, caption, opts_kb)
+            return
+
+        elif data.startswith("opt_ep_"):
+            if not current:
+                await callback_query.answer("Nothing is playing!", show_alert=True)
+                return
+            from plugins.movies import vod_sessions, trigger_movie_playback, get_episode_panel
+            session_data = vod_sessions.get(chat_id)
+            if not session_data:
+                await callback_query.answer("Series session expired. Use /movie to select episodes.", show_alert=True)
+                return
+            
+            action_type = data.split("_")[2]  # prev, next, list
+            curr_season = getattr(current, "season", session_data.get("chosen_season", 1))
+            curr_ep = getattr(current, "episode", session_data.get("chosen_episode", 1))
+            
+            if action_type == "prev":
+                if curr_ep <= 1:
+                    await callback_query.answer("Already at Episode 1!", show_alert=True)
+                    return
+                target_ep = curr_ep - 1
+                await callback_query.answer(f"Loading Episode {target_ep}...")
+                stream_manager.menu_active[chat_id] = False
+                await trigger_movie_playback(callback_query, session_data, season=curr_season, episode=target_ep, is_next=True)
+                return
+            elif action_type == "next":
+                target_ep = curr_ep + 1
+                await callback_query.answer(f"Loading Episode {target_ep}...")
+                stream_manager.menu_active[chat_id] = False
+                await trigger_movie_playback(callback_query, session_data, season=curr_season, episode=target_ep, is_next=True)
+                return
+            elif action_type == "list":
+                await callback_query.answer("Opening episodes list...")
+                ep_caption, ep_markup = get_episode_panel(session_data)
+                try:
+                    if callback_query.message.photo:
+                        await callback_query.message.edit_caption(caption=ep_caption, reply_markup=ep_markup, parse_mode=enums.ParseMode.HTML)
+                    else:
+                        await callback_query.message.edit_text(text=ep_caption, reply_markup=ep_markup, parse_mode=enums.ParseMode.HTML)
+                except Exception:
+                    pass
+                return
+
         elif data == "vcplay_close" or data.startswith("play_close"):
+            stream_manager.menu_active.pop(chat_id, None)
             await callback_query.answer("Closing...")
             try:
                 await callback_query.message.delete()

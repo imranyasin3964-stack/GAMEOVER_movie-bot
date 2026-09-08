@@ -150,24 +150,8 @@ class SeekableMediaStream(MediaStream):
         orig_check = ms_mod.check_stream
         
         async def mock_check(ffmpeg_params, path, stream_params, before_cmds=None, headers=None):
-            clean_params = None
-            if ffmpeg_params:
-                import shlex
-                parts = shlex.split(ffmpeg_params)
-                new_parts = []
-                skip = False
-                for part in parts:
-                    if skip:
-                        skip = False
-                        continue
-                    if part == "-ss":
-                        skip = True
-                        continue
-                    if part == "-re":
-                        continue
-                    new_parts.append(part)
-                clean_params = " ".join(new_parts) if new_parts else None
-            return await orig_check(clean_params, path, stream_params, before_cmds, headers)
+            # Pass None so that ffprobe only probes the stream format without erroring on custom ffmpeg filters
+            return await orig_check(None, path, stream_params, before_cmds, headers)
             
         ms_mod.check_stream = mock_check
         try:
@@ -204,6 +188,8 @@ class PlayerManager:
         self.idle_timers: dict[int, asyncio.Task] = {}  # per-group idle timers
         self.stream_start_time: dict[int, float] = {}   # chat_id -> start time
         self.current_seek_offset: dict[int, int] = {}   # chat_id -> seek offset in seconds
+        self.current_speed: dict[int, float] = {}       # chat_id -> playback speed (default 1.0)
+        self.menu_active: dict[int, bool] = {}          # chat_id -> True if Options panel is currently open
         self.paused_time: dict[int, float] = {}         # chat_id -> pause timestamp
         self.active_message_id: dict[int, int] = {}     # chat_id -> now playing message_id
         
@@ -496,6 +482,8 @@ class PlayerManager:
                 self.current_seek_offset[chat_id] = force_seek
                 self.stream_start_time[chat_id] = asyncio.get_event_loop().time()
                 self.paused_time.pop(chat_id, None)
+                self.current_speed[chat_id] = 1.0
+                self.menu_active[chat_id] = False
 
             # Ensure assistant is in the group
             try:
@@ -596,7 +584,17 @@ class PlayerManager:
             # ── PyTgCalls Media Stream Setup ──
             seek_val = self.current_seek_offset.get(chat_id, 0)
             seek_str = f"-ss {seek_val}" if seek_val > 0 else ""
-            ffmpeg_params = f"--base ---start -loglevel error -hide_banner {seek_str}".strip()
+            speed = self.current_speed.get(chat_id, 1.0)
+
+            if abs(speed - 1.0) > 0.01:
+                pts_factor = round(1.0 / speed, 4)
+                ffmpeg_params = (
+                    f"--base ---start -loglevel error -hide_banner {seek_str} "
+                    f"--video ---end -vf scale=1280:720,setpts={pts_factor}*PTS "
+                    f"--audio ---end -af atempo={speed}"
+                ).strip()
+            else:
+                ffmpeg_params = f"--base ---start -loglevel error -hide_banner {seek_str}".strip()
 
             # Target 720p @ 60 FPS video parameters as instructed
             vid_params = VideoParameters(width=1280, height=720, frame_rate=60)
@@ -755,6 +753,8 @@ class PlayerManager:
     async def stop(self, chat_id: int):
         """Stop playback, clear queue, delete local cache, and leave voice chat."""
         self.skip_votes.pop(chat_id, None)
+        self.current_speed.pop(chat_id, None)
+        self.menu_active.pop(chat_id, None)
         old_msg_id = self.active_message_id.pop(chat_id, None)
         if old_msg_id and self.app:
             try:
@@ -901,6 +901,18 @@ class PlayerManager:
             print(f"[Player] Resume error: {e}")
             return False
 
+    def get_elapsed_seconds(self, chat_id: int) -> int:
+        """Returns accurate media elapsed seconds considering speed and pauses."""
+        loop = asyncio.get_event_loop()
+        now = loop.time()
+        start = self.stream_start_time.get(chat_id, now)
+        offset = self.current_seek_offset.get(chat_id, 0)
+        speed = self.current_speed.get(chat_id, 1.0)
+        is_paused = chat_id in self.paused_time
+        curr = self.paused_time[chat_id] if is_paused else now
+        elapsed = int((curr - start) * speed + offset)
+        return max(0, elapsed)
+
     async def seek(self, chat_id: int, seconds: int) -> bool:
         song = queue_manager.get_current(chat_id)
         if not song:
@@ -908,14 +920,7 @@ class PlayerManager:
             
         loop = asyncio.get_event_loop()
         now = loop.time()
-        start = self.stream_start_time.get(chat_id, now)
-        offset = self.current_seek_offset.get(chat_id, 0)
-        
-        is_paused = chat_id in self.paused_time
-        if is_paused:
-            elapsed = self.paused_time[chat_id] - start + offset
-        else:
-            elapsed = now - start + offset
+        elapsed = self.get_elapsed_seconds(chat_id)
             
         target = elapsed + seconds
         duration = song.duration_secs
@@ -927,26 +932,39 @@ class PlayerManager:
             
         self.current_seek_offset[chat_id] = int(target)
         self.stream_start_time[chat_id] = now
-        if is_paused:
+        if chat_id in self.paused_time:
             self.paused_time[chat_id] = now
             
         return await self.play(chat_id, song, is_seek=True)
 
+    async def set_speed(self, chat_id: int, speed: float) -> bool:
+        """Changes playback speed seamlessly at the current media offset."""
+        song = queue_manager.get_current(chat_id)
+        if not song:
+            return False
+        self.current_speed[chat_id] = speed
+        return await self.seek(chat_id, 0)
+
     async def skip(self, chat_id: int) -> bool:
-        """Skip: pop next from queue and change stream. Returns True if next song found."""
-        next_song = queue_manager.pop(chat_id)
+        """Skip the current track and play next one, or stop if queue is empty."""
+        self.skip_votes.pop(chat_id, None)
+        self.current_speed.pop(chat_id, None)
+        self.menu_active.pop(chat_id, None)
         
-        # Schedule cleanup of current local file after 10 min (don't block playback)
+        # Schedule cleanup of current local file after delay
         old_local = self.local_files.pop(chat_id, None)
         if old_local:
             current_song = queue_manager.get_current(chat_id)
             asyncio.create_task(delayed_clean_cached_file(old_local, delay=get_cleanup_delay(current_song)))
             
-        if next_song:
-            return await self.play(chat_id, next_song)
+        if not queue_manager.is_empty(chat_id):
+            next_song = queue_manager.pop(chat_id)
+            print(f"[Player] Skipping to next track: {next_song.title} in chat {chat_id}")
+            return await self.change_stream(chat_id, next_song, send_card=True)
         else:
+            print(f"[Player] Queue empty, stopping playback in chat {chat_id}")
             await self.stop(chat_id)
-            return False
+            return True
 
     async def close(self):
         """Graceful shutdown — leave all active voice chats and delete caches."""
@@ -1042,10 +1060,7 @@ async def live_ui_updater(app, chat_id, message_id):
             continue
             
         # Calculate current elapsed seconds
-        now = asyncio.get_event_loop().time()
-        start = stream_manager.stream_start_time.get(chat_id, now)
-        offset = stream_manager.current_seek_offset.get(chat_id, 0)
-        elapsed = int(now - start + offset)
+        elapsed = stream_manager.get_elapsed_seconds(chat_id)
         
         # Save VOD progress dynamically
         is_vod = (getattr(song, "uploader", "") == "MOVIES Engine") or (song.duration == "VOD")
@@ -1063,7 +1078,15 @@ async def live_ui_updater(app, chat_id, message_id):
                 
         new_caption = get_rich_caption(song, played_secs=elapsed)
         total_sec_val = song.duration_secs if song and song.duration_secs else 0
-        keyboard = get_rich_control_buttons(chat_id, is_paused=False, played_secs=elapsed, total_secs=total_sec_val)
+
+        # Check if user is currently viewing the Options sub-menu
+        if stream_manager.menu_active.get(chat_id, False):
+            from plugins.controls import get_options_menu_buttons
+            curr_spd = stream_manager.current_speed.get(chat_id, 1.0)
+            is_series = bool(getattr(song, "season", 0) or getattr(song, "episode", 0))
+            keyboard = get_options_menu_buttons(chat_id, current_speed=curr_spd, is_series=is_series)
+        else:
+            keyboard = get_rich_control_buttons(chat_id, is_paused=False, played_secs=elapsed, total_secs=total_sec_val)
         
         try:
             # Single atomic Bot API update preserving colored button styles (no flicker)
