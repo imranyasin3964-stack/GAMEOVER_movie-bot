@@ -176,6 +176,24 @@ class SeekableMediaStream(MediaStream):
             ms_mod.check_stream = orig_check
 
 
+async def get_media_duration_seconds(file_path: str) -> int:
+    """Fast ffprobe check to get exact video duration in seconds."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            'ffprobe', '-v', 'error',
+            '-show_entries', 'format=duration',
+            '-of', 'default=noprint_wrappers=1:nokey=1',
+            file_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=3.0)
+        dur = float(stdout.decode().strip())
+        return int(dur)
+    except Exception:
+        return 0
+
+
 class PlayerManager:
     def __init__(self):
         self._pytg: PyTgCalls = None
@@ -567,11 +585,18 @@ class PlayerManager:
             headers = None if is_local else download_headers
             if is_local:
                 self.local_files[chat_id] = media_path
+                # Probe exact movie duration in seconds
+                detected_dur = await get_media_duration_seconds(media_path)
+                if detected_dur > 0:
+                    song.duration_secs = detected_dur
+                    from plugins.controls import format_seconds
+                    song.duration = format_seconds(detected_dur)
+                    print(f"[Player] Detected movie duration: {song.duration} ({detected_dur}s)")
 
             # ── PyTgCalls Media Stream Setup ──
             seek_val = self.current_seek_offset.get(chat_id, 0)
             seek_str = f"-ss {seek_val}" if seek_val > 0 else ""
-            ffmpeg_params = f"--base ---start -nostats -loglevel error -hide_banner {seek_str}".strip()
+            ffmpeg_params = f"--base ---start -loglevel error -hide_banner {seek_str}".strip()
 
             # Target 720p @ 60 FPS video parameters as instructed
             vid_params = VideoParameters(width=1280, height=720, frame_rate=60)
@@ -969,14 +994,41 @@ async def apply_styled_buttons(chat_id: int, message_id: int, buttons):
         print(f"[Player] apply_styled_buttons error: {e}")
 
 
+async def edit_styled_caption(chat_id: int, message_id: int, caption: str, buttons):
+    """Edits message caption and reply markup in a single Bot API call to avoid button style flickering."""
+    try:
+        from config import Config
+        from bot import _markup_to_bot_api_json
+        import aiohttp, json
+        token_val = Config.BOT_TOKEN
+        if token_val:
+            payload = {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "caption": caption,
+                "parse_mode": "HTML",
+                "reply_markup": json.dumps({
+                    "inline_keyboard": _markup_to_bot_api_json(buttons)
+                })
+            }
+            timeout = aiohttp.ClientTimeout(total=5.0)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                await session.post(
+                    f"https://api.telegram.org/bot{token_val}/editMessageCaption",
+                    json=payload
+                )
+    except Exception as e:
+        print(f"[Player] edit_styled_caption error: {e}")
+
+
 async def live_ui_updater(app, chat_id, message_id):
     """
-    Updates the progress bar every second.
+    Updates the progress bar smoothly every 12s without button style flickering or flood wait.
     """
     from plugins.controls import get_rich_control_buttons, get_rich_caption
     
     while True:
-        await asyncio.sleep(5)  # Update every 5s — stays well under Telegram's 20 edits/min rate limit
+        await asyncio.sleep(12)  # Update every 12s: smooth updates, zero flood wait, zero flicker
         
         song = queue_manager.get_current(chat_id)
         if not song or not queue_manager.is_playing(chat_id):
@@ -1013,35 +1065,8 @@ async def live_ui_updater(app, chat_id, message_id):
         total_sec_val = song.duration_secs if song and song.duration_secs else 0
         keyboard = get_rich_control_buttons(chat_id, is_paused=False, played_secs=elapsed, total_secs=total_sec_val)
         
-        from pyrogram.errors import FloodWait, MessageNotModified
         try:
-            try:
-                await app.edit_message_caption(
-                    chat_id=chat_id,
-                    message_id=message_id,
-                    caption=new_caption,
-                    reply_markup=keyboard
-                )
-            except MessageNotModified:
-                pass
-            except FloodWait as e:
-                await asyncio.sleep(e.value + 1)
-            except Exception:
-                try:
-                    await app.edit_message_text(
-                        chat_id=chat_id,
-                        message_id=message_id,
-                        text=new_caption,
-                        reply_markup=keyboard,
-                        disable_web_page_preview=True
-                    )
-                except MessageNotModified:
-                    pass
-                except FloodWait as e:
-                    await asyncio.sleep(e.value + 1)
-                    
-            # Re-apply colored styled buttons so they never revert to default gray/blue
-            await apply_styled_buttons(chat_id, message_id, keyboard)
-            
+            # Single atomic Bot API update preserving colored button styles (no flicker)
+            await edit_styled_caption(chat_id, message_id, new_caption, keyboard)
         except Exception:
             break

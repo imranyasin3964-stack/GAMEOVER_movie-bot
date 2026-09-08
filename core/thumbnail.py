@@ -218,17 +218,29 @@ def generate_movie_thumbnail_sync(image_data: bytes | None, title: str = "") -> 
     overlay = Image.new("RGBA", (base_w, base_h), (10, 14, 22, 170))
     bg = Image.alpha_composite(bg.convert("RGBA"), overlay)
 
-    # 3. Fit Center Poster (prominent, full-height fitted)
-    max_h = 560
-    max_w = 960
-    scale = min(max_w / poster.width, max_h / poster.height)
-    fit_w = max(10, int(poster.width * scale))
-    fit_h = max(10, int(poster.height * scale))
+    # 3. Create 16:9 Landscape Center Card (widescreen 960x540)
+    card_w = 960
+    card_h = 540
+    target_card_ratio = 16 / 9
+    current_ratio = poster.width / poster.height
+    
+    if current_ratio > target_card_ratio:
+        # Wider than 16:9, crop sides
+        new_w = int(poster.height * target_card_ratio)
+        left = (poster.width - new_w) // 2
+        cropped = poster.crop((left, 0, left + new_w, poster.height))
+    else:
+        # Taller than 16:9 (standard portrait poster), crop top/bottom focusing on key visual area
+        new_h = int(poster.width / target_card_ratio)
+        top = max(0, min(poster.height - new_h, int((poster.height - new_h) * 0.30)))
+        cropped = poster.crop((0, top, poster.width, top + new_h))
 
-    fit_poster = poster.resize((fit_w, fit_h), Image.Resampling.LANCZOS)
+    fit_poster = cropped.resize((card_w, card_h), Image.Resampling.LANCZOS)
+    fit_w = card_w
+    fit_h = card_h
 
     # Rounded corners mask
-    radius = min(24, fit_w // 4, fit_h // 4)
+    radius = 24
     mask = Image.new("L", (fit_w, fit_h), 0)
     draw_mask = ImageDraw.Draw(mask)
     draw_mask.rounded_rectangle([(0, 0), (fit_w, fit_h)], radius=radius, fill=255)
@@ -236,7 +248,7 @@ def generate_movie_thumbnail_sync(image_data: bytes | None, title: str = "") -> 
 
     # Calculate center position
     pos_x = (base_w - fit_w) // 2
-    pos_y = 45 + (max_h - fit_h) // 2
+    pos_y = 52
 
     # 4. Soft 3D Drop Shadow behind poster
     shadow_pad = 40
@@ -280,7 +292,7 @@ def generate_movie_thumbnail_sync(image_data: bytes | None, title: str = "") -> 
         text_h = 24
 
     brand_x = (base_w - text_w) // 2
-    brand_y = 650
+    brand_y = 630
 
     # Translucent glass badge pill
     badge_pad_x = 28

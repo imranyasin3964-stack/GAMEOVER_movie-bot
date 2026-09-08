@@ -480,7 +480,8 @@ def register(app: Client):
                 return
 
             session = Session()
-            top_item = items[0]
+            hindi_item = next((it for it in items if "hindi" in it.title.lower()), None)
+            top_item = hindi_item if hindi_item else items[0]
             clean_title = top_item.title.replace("[Hindi]", "").replace("[English]", "").replace("[english]","").replace("[Hindi]","").strip()
 
             vod_sessions[chat_id] = {
