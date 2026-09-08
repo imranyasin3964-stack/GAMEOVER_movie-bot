@@ -292,7 +292,7 @@ def generate_movie_thumbnail_sync(image_data: bytes | None, title: str = "") -> 
 
     # Save to cached file
     cache_key = hashlib.md5(f"{title}_{len(image_data) if image_data else 'none'}".encode()).hexdigest()[:12]
-    out_path = os.path.join(DOWNLOADS_DIR, f"thumb_{cache_key}.jpg")
+    out_path = os.path.abspath(os.path.join(DOWNLOADS_DIR, f"thumb_{cache_key}.jpg"))
     final_rgb = bg.convert("RGB")
     final_rgb.save(out_path, "JPEG", quality=95)
     return out_path
@@ -300,14 +300,14 @@ def generate_movie_thumbnail_sync(image_data: bytes | None, title: str = "") -> 
 
 async def generate_movie_thumbnail(image_url: str, title: str = "") -> str:
     """
-    Downloads the poster asynchronously (with caching) and returns the generated 16:9 thumbnail path.
+    Downloads the poster asynchronously (with caching) and returns the generated 16:9 thumbnail path (absolute path).
     """
     await download_font()
 
     # Check cache if URL is known
     if image_url:
         cache_key = hashlib.md5(f"{title}_{image_url}".encode()).hexdigest()[:12]
-        cached_file = os.path.join(DOWNLOADS_DIR, f"thumb_{cache_key}.jpg")
+        cached_file = os.path.abspath(os.path.join(DOWNLOADS_DIR, f"thumb_{cache_key}.jpg"))
         if os.path.exists(cached_file) and os.path.getsize(cached_file) > 5000:
             return cached_file
 
@@ -320,13 +320,23 @@ async def generate_movie_thumbnail(image_url: str, title: str = "") -> str:
 
     try:
         out_path = await asyncio.to_thread(generate_movie_thumbnail_sync, image_data, title)
-        return out_path
+        # Also link URL cache if available
+        if image_url:
+            cache_key = hashlib.md5(f"{title}_{image_url}".encode()).hexdigest()[:12]
+            url_cached_file = os.path.abspath(os.path.join(DOWNLOADS_DIR, f"thumb_{cache_key}.jpg"))
+            if not os.path.exists(url_cached_file) and os.path.exists(out_path):
+                try:
+                    import shutil
+                    shutil.copyfile(out_path, url_cached_file)
+                except Exception:
+                    pass
+        return os.path.abspath(out_path)
     except Exception as e:
         print(f"[Thumbnail] Generation error: {e}")
         # Emergency fallback
         try:
             default_img = create_default_movie_poster()
-            fallback_path = os.path.join(DOWNLOADS_DIR, f"thumb_default_{uuid.uuid4().hex[:6]}.jpg")
+            fallback_path = os.path.abspath(os.path.join(DOWNLOADS_DIR, f"thumb_default_{uuid.uuid4().hex[:6]}.jpg"))
             default_img.save(fallback_path, "JPEG", quality=90)
             return fallback_path
         except Exception:

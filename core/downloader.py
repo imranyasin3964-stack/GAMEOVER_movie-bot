@@ -112,15 +112,18 @@ async def download_file(
                             else:
                                 time_left_str = "calculating..."
 
-                            if now - last_console_time >= 0.5 or downloaded == total_size:
+                            if now - last_console_time >= 2.0 or downloaded == total_size:
                                 percent = int((downloaded / total_size) * 100) if total_size > 0 else 0
-                                print(f"[Console Downloader] -> {percent}% | {downloaded_mb:.2f}/{total_size_mb:.2f} MB | Speed: {speed_mb:.2f} MB/s | ETA: {time_left_str}  ", end="\r", flush=True)
+                                print(f"[Downloader] -> {percent}% | {downloaded_mb:.1f}/{total_size_mb:.1f} MB | {speed_mb:.1f} MB/s | ETA: {time_left_str}  ", end="\r", flush=True)
                                 last_console_time = now
 
                             if progress_callback:
                                 percent = int((downloaded / total_size) * 100) if total_size > 0 else 0
-                                if now - last_update_time >= 2.0 or (total_size > 0 and percent >= 99):
-                                    await progress_callback(percent, downloaded, total_size)
+                                if now - last_update_time >= 4.0 or (total_size > 0 and percent >= 99):
+                                    try:
+                                        await progress_callback(percent, downloaded, total_size)
+                                    except Exception:
+                                        pass
                                     last_update_time = now
 
                     if total_size > 0 and downloaded < total_size:
@@ -131,7 +134,10 @@ async def download_file(
 
                     print()
                     if progress_callback:
-                        await progress_callback(100, downloaded, total_size)
+                        try:
+                            await progress_callback(100, downloaded, total_size)
+                        except Exception:
+                            pass
                     return True
 
         except Exception as e:
@@ -160,7 +166,7 @@ async def download_song(
         clean_id = str(abs(hash(song.title)))
 
     output_filename = f"{clean_id}_{mode}.mp4"
-    output_path = os.path.join(DOWNLOADS_DIR, output_filename)
+    output_path = os.path.abspath(os.path.join(DOWNLOADS_DIR, output_filename))
 
     if os.path.exists(output_path):
         size = os.path.getsize(output_path)
@@ -194,7 +200,7 @@ async def download_song(
         print(f"[Downloader] No stream URL provided for {song.title}")
         return None
 
-    print(f"[Downloader] Downloading VOD stream for: {song.title}")
+    print(f"[Downloader] Downloading VOD stream to downloads folder for: {song.title}")
     ok = await download_file(target_url, output_path, progress_callback, headers=download_headers)
     if ok:
         return output_path

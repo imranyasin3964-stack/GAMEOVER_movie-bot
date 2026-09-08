@@ -897,11 +897,22 @@ async def trigger_movie_playback(msg_or_query, session_data: dict, season: int =
         title_suffix = f" S{season}E{episode}" if is_series else ""
         display_title = f"{session_data['title']}{title_suffix} {lang_tag}"
         
+        # Safely extract cover image URL
+        thumb_url = ""
+        cov_obj = getattr(current_item, "cover", None)
+        if cov_obj:
+            if hasattr(cov_obj, "url") and cov_obj.url:
+                thumb_url = str(cov_obj.url)
+            elif isinstance(cov_obj, dict):
+                thumb_url = str(cov_obj.get("url", ""))
+            elif isinstance(cov_obj, str):
+                thumb_url = cov_obj
+
         song = SongInfo(
             title=display_title,
             video_url=result["url"],
             audio_url=result["url"],
-            thumbnail=str(current_item.cover.url) if (current_item.cover and current_item.cover.url) else "",
+            thumbnail=thumb_url,
             duration="VOD",
             duration_secs=0,
             webpage_url=result["url"],
@@ -948,8 +959,8 @@ async def trigger_movie_playback(msg_or_query, session_data: dict, season: int =
                     await msg_or_query.message.delete()
                 elif hasattr(msg_or_query, "delete"):
                     await msg_or_query.delete()
-                elif isinstance(msg_or_query, tuple) and stream_manager._app:
-                    await stream_manager._app.delete_messages(msg_or_query[0], msg_or_query[1])
+                elif isinstance(msg_or_query, tuple) and stream_manager.app:
+                    await stream_manager.app.delete_messages(msg_or_query[0], msg_or_query[1])
             except Exception:
                 pass
         else:

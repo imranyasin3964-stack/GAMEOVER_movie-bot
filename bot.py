@@ -358,15 +358,22 @@ async def main():
     finally:
         print("\nShutting down...")
         try:
-            await asyncio.wait_for(assistant.stop(), timeout=1.5)
+            for chat_id in list(stream_manager._active_chats):
+                try:
+                    await stream_manager.stop(chat_id)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            await asyncio.wait_for(assistant.stop(), timeout=2.0)
         except BaseException:
             pass
         try:
-            await asyncio.wait_for(bot.stop(), timeout=1.5)
+            await asyncio.wait_for(bot.stop(), timeout=2.0)
         except BaseException:
             pass
-        print("[Bot] Hard exiting now... Goodbye!")
-        os.kill(os.getpid(), 9)
+        print("[Bot] Exited cleanly. Goodbye!")
 
 
 if __name__ == "__main__":

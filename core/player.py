@@ -9,8 +9,8 @@ import os
 import asyncio
 import time
 import logging
-logging.getLogger("pytgcalls").setLevel(logging.DEBUG)
-logging.getLogger("ffmpeg").setLevel(logging.DEBUG)
+logging.getLogger("pytgcalls").setLevel(logging.WARNING)
+logging.getLogger("ffmpeg").setLevel(logging.WARNING)
 from typing import Optional, Dict, Any, Union
 from pyrogram import Client, filters as py_filters, enums
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message, CallbackQuery
@@ -515,17 +515,66 @@ class PlayerManager:
                 "Referer": "https://themoviebox.org/",
             }
 
-            # Check if target is a local file or direct stream URL
-            is_local = os.path.exists(target_url)
-            media_path = target_url
+            # Check if target is a local file or download to downloads/ folder first
+            local_file = None
+            if os.path.exists(target_url):
+                local_file = os.path.abspath(target_url)
+            else:
+                from config import Config
+                clean_id = "".join(c for c in song.title if c.isalnum() or c in ("-", "_"))[:30]
+                if not clean_id:
+                    clean_id = str(abs(hash(song.title)))
+                expected_local = os.path.abspath(os.path.join(Config.DOWNLOADS_DIR, f"{clean_id}_{mode}.mp4"))
+
+                if os.path.exists(expected_local) and os.path.getsize(expected_local) > 100000:
+                    local_file = expected_local
+                    print(f"[Player] Found cached downloaded file: {local_file}")
+                elif is_seek and chat_id in self.local_files and os.path.exists(self.local_files[chat_id]):
+                    local_file = self.local_files[chat_id]
+                else:
+                    print(f"[Player] Downloading VOD file to downloads/ folder for: {song.title}")
+                    last_progress_edit = 0
+                    async def progress_cb(pct, down, total):
+                        nonlocal last_progress_edit
+                        now = time.time()
+                        if now - last_progress_edit >= 4.0 or pct >= 99:
+                            last_progress_edit = now
+                            status_mid = self.active_message_id.get(chat_id)
+                            if status_mid and self.app:
+                                mb_down = down / (1024 * 1024)
+                                mb_tot = total / (1024 * 1024)
+                                try:
+                                    await self.app.edit_message_text(
+                                        chat_id=chat_id,
+                                        message_id=status_mid,
+                                        text=f"<b>Dᴏᴡɴʟᴏᴀᴅɪɴɢ Mᴏᴠɪᴇ :</b> <code>{pct}%</code>\n"
+                                             f"‣ <b>Sɪᴢᴇ :</b> <code>{mb_down:.1f} / {mb_tot:.1f} MB</code>\n"
+                                             f"‣ <b>Sᴛᴀᴛᴜs :</b> VPS par fast download ho raha hai...",
+                                        disable_web_page_preview=True
+                                    )
+                                except Exception:
+                                    pass
+
+                    dl_path = await download_song(song, mode=mode, progress_callback=progress_cb)
+                    if dl_path and os.path.exists(dl_path):
+                        local_file = os.path.abspath(dl_path)
+                    else:
+                        print(f"[Player] Download failed or cancelled for {song.title}. Fallback to remote URL.")
+                        local_file = target_url
+
+            is_local = os.path.exists(local_file)
+            media_path = os.path.abspath(local_file) if is_local else local_file
             headers = None if is_local else download_headers
+            if is_local:
+                self.local_files[chat_id] = media_path
 
             # ── PyTgCalls Media Stream Setup ──
             seek_val = self.current_seek_offset.get(chat_id, 0)
-            ffmpeg_params = f"-ss {seek_val}" if seek_val > 0 else None
+            seek_str = f"-ss {seek_val}" if seek_val > 0 else ""
+            ffmpeg_params = f"--base ---start -nostats -loglevel error -hide_banner {seek_str}".strip()
 
-            # Standard optimal HD 720p @ 30 FPS for smooth WebRTC video streaming without VPS CPU overload
-            vid_params = VideoParameters(width=1280, height=720, frame_rate=30)
+            # Target 720p @ 60 FPS video parameters as instructed
+            vid_params = VideoParameters(width=1280, height=720, frame_rate=60)
 
             def get_stream(video_required: bool = True):
                 v_flags = MediaStream.Flags.REQUIRED if video_required else MediaStream.Flags.IGNORE
@@ -627,6 +676,8 @@ class PlayerManager:
                     from core.image_helper import get_16_9_thumbnail
                     
                     photo_url = await get_16_9_thumbnail(song.thumbnail, song.title)
+                    if photo_url and os.path.exists(photo_url):
+                        photo_url = os.path.abspath(photo_url)
                     
                     caption = get_rich_caption(song, played_secs=0)
                     buttons = get_rich_control_buttons(chat_id, is_paused=False)
