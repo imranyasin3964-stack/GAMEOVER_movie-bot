@@ -45,7 +45,7 @@ def control_buttons(state: str = "play") -> InlineKeyboardMarkup:
     btn_replay = InlineKeyboardButton("↺", callback_data="play_replay", style="primary")
     btn_skip = InlineKeyboardButton("--I", callback_data="play_skip", style="primary")
     btn_stop = InlineKeyboardButton("▢", callback_data="play_stop", style="danger")
-    close_btn = InlineKeyboardButton("Cʟᴏsᴇ", callback_data="vcplay_close", style="danger")
+    close_btn = InlineKeyboardButton("CLOSE", callback_data="vcplay_close", style="danger")
 
     return InlineKeyboardMarkup([
         [btn_play, btn_pause, btn_replay, btn_skip, btn_stop],
@@ -68,13 +68,13 @@ def get_rich_control_buttons(chat_id: int, is_paused: bool = False, played_secs:
         pct = played_secs / total_secs
         idx = max(0, min(bar_len - 1, int(pct * bar_len)))
         bar = ["─"] * bar_len
-        bar[idx] = "●"
+        bar[idx] = "🔘"
         bar_str = "".join(bar)
     else:
-        bar_str = "●─────────"
+        bar_str = "🔘─────────"
 
     progress_btn = InlineKeyboardButton(f"{played_str} {bar_str} {total_str}", callback_data=f"play_progress_{chat_id}")
-    close_btn = InlineKeyboardButton("Cʟᴏsᴇ", callback_data=f"play_close_{chat_id}", style="danger")
+    close_btn = InlineKeyboardButton("CLOSE", callback_data=f"play_close_{chat_id}", style="danger")
 
     return InlineKeyboardMarkup([
         [btn_play, btn_pause, btn_replay, btn_skip, btn_stop],

@@ -332,15 +332,15 @@ def delete_playlist(user_id: int, playlist_name: str):
 
 # ─── VOD Cache Helpers ──────────────────────────────────
 def get_cached_vod(key: str) -> str:
-    """Return cached stream URL if it exists and is less than 30 minutes old."""
+    """Return cached stream URL if it exists and is less than 3 hours old."""
     conn = get_db()
     cursor = conn.cursor()
     try:
         cursor.execute("SELECT url, timestamp FROM vod_cache WHERE key = ?", (key,))
         row = cursor.fetchone()
         if row:
-            # 30 minutes = 1800 seconds (ensures URL signature remains valid)
-            if time.time() - row["timestamp"] < 1800:
+            # 3 hours = 10800 seconds
+            if time.time() - row["timestamp"] < 10800:
                 print(f"[VOD Cache] Hit for key: {key}")
                 return row["url"]
             else:

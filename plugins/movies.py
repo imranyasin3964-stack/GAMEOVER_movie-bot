@@ -41,7 +41,7 @@ ROYAL_HEADER = HEADER
 
 async def safe_edit(message, text, reply_markup=None):
     try:
-        from core.client import send_styled
+        from bot import send_styled
         if hasattr(message, "chat"):
             chat_id = message.chat.id
             message_id = message.id
@@ -147,7 +147,7 @@ async def select_vod_item(chat_id: int, item: SearchResultsItem, status_msg, use
 
 async def show_loading_animation(chat_id: int, base_text: str) -> tuple:
     """Creates a message and animates loading dots for smooth, responsive UX."""
-    from core.client import send_styled
+    from bot import send_styled
     msg_data = await send_styled(
         chat_id=chat_id,
         text=f"{HEADER}<b>{base_text}</b>"
@@ -430,7 +430,7 @@ def register(app: Client):
                 ]
             ])
             try:
-                from core.client import send_styled
+                from bot import send_styled
                 await send_styled(chat_id=owner_id, text=alert_caption, markup=alert_keyboard)
             except Exception as pm_err:
                 print(f"[Movies Engine] Failed to alert owner in PM: {pm_err}")
@@ -466,7 +466,7 @@ def register(app: Client):
                     InlineKeyboardButton("Tʀᴇɴᴅɪɴɢ Mᴏᴠɪᴇs & Sᴇʀɪᴇs", callback_data=f"VOD|trend_movies|{user_id}", style="success")
                 ]
             ])
-            from core.client import send_styled
+            from bot import send_styled
             await send_styled(chat_id=chat_id, text=caption, markup=keyboard)
             return
 
@@ -921,7 +921,6 @@ async def trigger_movie_playback(msg_or_query, session_data: dict, season: int =
         song.season = season
         song.episode = episode
         song.clean_title = session_data.get("title", song.title)
-        song.fallback_urls = result.get("fallbacks", [])
         
         # Check if already playing - Queue if needed
         is_playing = queue_manager.is_playing(chat_id)
@@ -1022,17 +1021,5 @@ async def trigger_movie_playback(msg_or_query, session_data: dict, season: int =
             
     except Exception as e:
         queue_manager.clear(chat_id)
-        print(f"[MOVIES Engine] Playback error: {e}", flush=True)
-        movie_name = session_data.get("title", "Movie")
-        err_msg = (
-            f"{HEADER}"
-            f"<b>Pʟᴀʏʙᴀᴄᴋ Eʀʀᴏʀ</b>\n\n"
-            f"‣ <b>Mᴏᴠɪᴇ :</b> <code>{movie_name}</code>\n"
-            f"‣ <b>Sᴛᴀᴛᴜs :</b> Stream link resolve nahi ho saki.\n\n"
-            f"<i>Neeche se trending content check karein ya kuch der baad dobara try karein.</i>"
-        )
-        retry_markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Tʀᴇɴᴅɪɴɢ Mᴏᴠɪᴇs", callback_data=f"VOD|trend_movies|{session_data.get('requester_id', 0)}", style="success")],
-            [InlineKeyboardButton("Cʟᴏsᴇ", callback_data="vcplay_close", style="danger")]
-        ])
-        await safe_edit(message, err_msg, reply_markup=retry_markup)
+        print(f"[MOVIES Engine] Playback error: {e}")
+        await safe_edit(message, f"{HEADER}<b>Error resolving stream:</b> {str(e)}")

@@ -77,7 +77,7 @@ DOWNLOAD_REQUEST_HEADERS = {
 """For media and subtitle files download requests"""
 
 
-DownloadQualitiesType = t.Literal[
+type DownloadQualitiesType = t.Literal[
     "WORST", "BEST", "360P", "480P", "720P", "1080P"
 ]  # TODO: Add more qualities
 

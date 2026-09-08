@@ -25,9 +25,9 @@ from core.fonts import ADMIN_HEADER as ROYAL_HEADER
 admin_states = {}
 
 
-# ─── Local send_styled wrapper — calls core/client.py for reliable native MTProto delivery ───
+# ─── Local send_styled wrapper — calls bot.py's HTTP Bot API version for button colors ───
 async def send_styled(client: Client, chat_id: int, text: str, markup=None, message_id: int = None):
-    from core.client import send_styled as bot_send_styled
+    from bot import send_styled as bot_send_styled
     return await bot_send_styled(chat_id=chat_id, text=text, markup=markup, message_id=message_id)
 
 

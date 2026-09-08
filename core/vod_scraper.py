@@ -92,21 +92,13 @@ r_mod_v2.Session.get_with_cookies = patched_get_with_cookies_v2
 orig_init_v1 = r_mod_v1.Session.__init__
 orig_init_v2 = r_mod_v2.Session.__init__
 
-GEO_HEADERS = {
-    "X-Forwarded-For": "103.255.4.1",
-    "Client-IP": "103.255.4.1",
-    "X-Real-IP": "103.255.4.1",
-    "X-Client-Info": '{"timezone":"Africa/Nairobi"}',
-}
-
 def patched_init_v1(self, *args, **kwargs):
     orig_init_v1(self, *args, **kwargs)
     from core.domain_manager import get_domain
     domain = get_domain()
     self._client.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-        "Referer": f"https://{domain}/",
-        **GEO_HEADERS
+        "Origin": f"https://{domain}",
+        "Referer": f"https://{domain}/"
     })
 
 def patched_init_v2(self, *args, **kwargs):
@@ -114,9 +106,8 @@ def patched_init_v2(self, *args, **kwargs):
     from core.domain_manager import get_domain
     domain = get_domain()
     self._client.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-        "Referer": f"https://{domain}/",
-        **GEO_HEADERS
+        "Origin": f"https://{domain}",
+        "Referer": f"https://{domain}/"
     })
 
 r_mod_v1.Session.__init__ = patched_init_v1
@@ -171,33 +162,13 @@ class FixedStreamFilesDetail(StreamFilesDetail):
 import difflib
 
 
-_SHARED_SESSION: Session = None
-
-async def get_shared_session() -> Session:
-    global _SHARED_SESSION
-    if _SHARED_SESSION is None:
-        _SHARED_SESSION = Session()
-        try:
-            await _SHARED_SESSION.ensure_cookies_are_assigned()
-        except Exception as e:
-            print(f"[VOD Scraper] ensure_cookies warning: {e}")
-        if not getattr(_SHARED_SESSION, "user_info", None):
-            try:
-                await _SHARED_SESSION._fetch_user_info()
-            except Exception:
-                pass
-        for bad in ["Origin", "origin"]:
-            _SHARED_SESSION._client.headers.pop(bad, None)
-    return _SHARED_SESSION
-
-
 async def search_vod(query: str, language: str = "en"):
     """
     Search MovieBox for a query and return ranked list of SearchResultsItem objects.
     Uses fuzzy matching and score ranking so titles like 'The Witcher' or 'witcer'
     always resolve cleanly without false negatives.
     """
-    session = await get_shared_session()
+    session = Session()
     
     # Clean query for search endpoint (strip season/ep markers)
     clean_query = re.sub(r'\s+S\d+\b', '', query, flags=re.IGNORECASE)
@@ -347,7 +318,6 @@ async def fetch_tv_details(session: Session, item: SearchResultsItem):
 async def resolve_stream_link(session: Session, item: SearchResultsItem, season: int = 0, episode: int = 0, quality: str = None):
     """
     Resolve the direct streaming URL for a movie or specific TV episode based on admin quality preferences.
-    Uses authenticated MovieBox session cookies & bearer tokens, querying fastest endpoints with multi-mirror fallback.
     """
     from core.db import get_setting
     if not quality:
@@ -361,98 +331,24 @@ async def resolve_stream_link(session: Session, item: SearchResultsItem, season:
         }
         quality = res_map.get(q_setting, "1080")
 
-    # Always resolve live stream URL to guarantee valid signatures
-
-
-    # Ensure session has assigned cookies and bearer token
-    if session is None:
-        session = await get_shared_session()
-    try:
-        await session.ensure_cookies_are_assigned()
-    except Exception as ce:
-        print(f"[VOD Scraper] ensure_cookies_are_assigned warning: {ce}")
-
-    # Remove any cross-origin Origin headers from session client to prevent Cloudflare CORS blocks
-    for bad_key in ["Origin", "origin"]:
-        if bad_key in session._client.headers:
-            del session._client.headers[bad_key]
-
-    candidate_hosts = [
-        "h5.aoneroom.com",
-        "fmoviesunblocked.net",
-        "sflix.film",
-        "movieboxhd.net",
-    ]
-
-    detail_path = getattr(item, "detailPath", "") or f"movie-{item.subjectId}"
-    params = {"subjectId": item.subjectId, "se": season, "ep": episode}
-
-    from moviebox_api.v1.models import StreamFilesMetadata, DownloadableFilesMetadata
-
-    stream_info = None
-    last_err = None
-
-    # Step 1: Query play endpoint across candidate mirrors using authenticated session
-    for host in candidate_hosts:
-        url = f"https://{host}/wefeed-h5-bff/web/subject/play"
-        headers = {
-            "Referer": f"https://{host}/movies/{detail_path}",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-            **GEO_HEADERS
+    cache_key = f"{item.subjectId}|{season}|{episode}|{quality}"
+    from core.db import get_cached_vod, set_cached_vod
+    
+    cached_url = get_cached_vod(cache_key)
+    if cached_url:
+        print(f"[VOD Scraper] Using cached URL for '{item.title}' (S{season}E{episode} - {quality}P)")
+        return {
+            "url": cached_url,
+            "resolution": quality,
+            "format": "MP4"
         }
-        try:
-            resp = await session._client.get(url, params=params, headers=headers, timeout=3.5)
-            if resp.status_code == 200 and "application/json" in resp.headers.get("content-type", ""):
-                data = resp.json()
-                if data.get("code") == 0 and data.get("data", {}).get("streams"):
-                    stream_info = StreamFilesMetadata(**data["data"])
-                    print(f"[VOD Scraper] Resolved '{item.title}' via {host} (play endpoint)")
-                    break
-        except Exception as e:
-            last_err = e
 
-    # Step 2: Fallback to download endpoint if play endpoint returned no streams
-    if not stream_info or not stream_info.streams:
-        for host in candidate_hosts:
-            url = f"https://{host}/wefeed-h5-bff/web/subject/download"
-            headers = {
-                "Referer": f"https://{host}/movies/{detail_path}",
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-                **GEO_HEADERS
-            }
-            try:
-                resp = await session._client.get(url, params=params, headers=headers, timeout=3.5)
-                if resp.status_code == 200 and "application/json" in resp.headers.get("content-type", ""):
-                    data = resp.json()
-                    if data.get("code") == 0 and data.get("data", {}).get("downloads"):
-                        dl_meta = DownloadableFilesMetadata(**data["data"])
-                        matched_dl = None
-                        for d in dl_meta.downloads:
-                            if str(d.resolution) == str(quality):
-                                matched_dl = d
-                                break
-                        if not matched_dl:
-                            matched_dl = dl_meta.best_media_file
-                        if matched_dl:
-                            resolved_url = str(matched_dl.url)
-                            print(f"[VOD Scraper] Resolved '{item.title}' via {host} (download fallback)")
-                            return {
-                                "url": resolved_url,
-                                "resolution": matched_dl.resolution,
-                                "format": "MP4"
-                            }
-            except Exception as e:
-                last_err = e
-
-    # Step 3: Match stream quality from stream_info
-    # Prioritize direct CDN streams (/resource/, /cms/) which support high-speed range requests
-    # and bypass cloud datacenter IP blocks, avoiding /bt/ (BitTorrent cache nodes).
-    if stream_info and stream_info.streams:
-        direct_streams = [s for s in stream_info.streams if "/bt/" not in str(getattr(s, "url", ""))]
-        pool = direct_streams if direct_streams else stream_info.streams
-
+    resolver = FixedStreamFilesDetail(session=session, item=item)
+    stream_info = await resolver.get_content_model(season=season, episode=episode)
+    
+    if stream_info.streams:
         matched = None
-        for stream in pool:
+        for stream in stream_info.streams:
             if str(stream.resolutions) == str(quality):
                 matched = stream
                 break
@@ -460,7 +356,7 @@ async def resolve_stream_link(session: Session, item: SearchResultsItem, season:
         if not matched:
             try:
                 streams_sorted = sorted(
-                    pool,
+                    stream_info.streams,
                     key=lambda s: int(s.resolutions) if str(s.resolutions).isdigit() else 0
                 )
                 req_val = int(quality) if quality.isdigit() else 1080
@@ -470,22 +366,20 @@ async def resolve_stream_link(session: Session, item: SearchResultsItem, season:
                         matched = s
                         break
                 if not matched and streams_sorted:
-                    matched = streams_sorted[-1]
+                    matched = streams_sorted[-1]  # Pick highest available
             except Exception:
-                matched = getattr(stream_info, "best_stream_file", None) or pool[-1]
+                matched = stream_info.best_stream_file
                 
         if not matched:
-            matched = getattr(stream_info, "best_stream_file", None) or stream_info.streams[0]
+            matched = stream_info.best_stream_file
             
         if matched:
             resolved_url = str(matched.url)
-            fallbacks = [str(s.url) for s in pool if str(s.url) != resolved_url]
+            set_cached_vod(cache_key, resolved_url)
             return {
                 "url": resolved_url,
                 "resolution": matched.resolutions,
-                "format": matched.format,
-                "fallbacks": fallbacks
+                "format": matched.format
             }
-
-    err_msg = f"No active video streams found on servers (last error: {last_err})"
-    raise Exception(err_msg)
+            
+    raise Exception("No active video streams found on servers.")

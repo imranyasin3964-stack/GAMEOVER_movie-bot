@@ -43,7 +43,7 @@ def register(app: Client):
                     f"‣ <b>User ID:</b> <code>{added_by_id}</code>"
                 )
                 try:
-                    from core.client import send_styled
+                    from bot import send_styled
                     await send_styled(chat_id=owner_id, text=alert_text)
                 except Exception as e:
                     print(f"[Group Add Alert] Error: {e}")
