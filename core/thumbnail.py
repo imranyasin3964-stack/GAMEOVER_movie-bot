@@ -6,7 +6,15 @@ import uuid
 import hashlib
 import asyncio
 import aiohttp
-from PIL import Image, ImageDraw, ImageFont, ImageFilter
+try:
+    from PIL import Image, ImageDraw, ImageFont, ImageFilter
+    HAS_PIL = True
+except ImportError:
+    Image = None
+    ImageDraw = None
+    ImageFont = None
+    ImageFilter = None
+    HAS_PIL = False
 
 from config import Config
 
@@ -21,6 +29,8 @@ FONT_URLS = [
 
 async def download_font():
     """Ensures a modern bold TTF font is present for typography."""
+    if not HAS_PIL:
+        return
     if os.path.exists(FONT_PATH):
         return
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -39,8 +49,10 @@ async def download_font():
             pass
 
 
-def get_system_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+def get_system_font(size: int):
     """Attempts to load Roboto-Bold or system fonts with safe default fallback."""
+    if not HAS_PIL:
+        return None
     candidate_paths = [
         FONT_PATH,
         os.path.join(os.path.dirname(__file__), "..", FONT_PATH),
@@ -61,8 +73,10 @@ def get_system_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
         return None
 
 
-def create_default_movie_poster(w: int = 1280, h: int = 720) -> Image.Image:
+def create_default_movie_poster(w: int = 1280, h: int = 720):
     """Creates a sleek, luxurious cinema graphic when no movie poster is available."""
+    if not HAS_PIL:
+        return None
     canvas = Image.new("RGBA", (w, h), (10, 14, 23, 255))
     
     # Ambient radial blue glow in center
@@ -167,6 +181,9 @@ def generate_movie_thumbnail_sync(image_data: bytes | None, title: str = "") -> 
     - Sleek bottom branding badge: G A M E O V E R   M O V I E   H U B
     - No duplicate title/duration/fake buttons
     """
+    if not HAS_PIL:
+        return ""
+
     base_w, base_h = 1280, 720
 
     # 1. Load poster or fallback
@@ -302,6 +319,9 @@ async def generate_movie_thumbnail(image_url: str, title: str = "") -> str:
     """
     Downloads the poster asynchronously (with caching) and returns the generated 16:9 thumbnail path (absolute path).
     """
+    if not HAS_PIL:
+        return ""
+
     await download_font()
 
     # Check cache if URL is known

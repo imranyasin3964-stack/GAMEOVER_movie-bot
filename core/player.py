@@ -675,10 +675,17 @@ class PlayerManager:
                     from plugins.controls import get_rich_control_buttons, get_rich_caption
                     from core.image_helper import get_16_9_thumbnail
                     
-                    photo_url = await get_16_9_thumbnail(song.thumbnail, song.title)
-                    if photo_url and os.path.exists(photo_url):
-                        photo_url = os.path.abspath(photo_url)
-                    
+                    photo_url = None
+                    try:
+                        photo_url = await get_16_9_thumbnail(song.thumbnail, song.title)
+                        if photo_url and os.path.exists(photo_url):
+                            photo_url = os.path.abspath(photo_url)
+                    except Exception as img_err:
+                        print(f"[Player] Thumbnail processing fallback: {img_err}")
+
+                    if not photo_url:
+                        photo_url = song.thumbnail or "https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?q=80&w=1280"
+
                     caption = get_rich_caption(song, played_secs=0)
                     buttons = get_rich_control_buttons(chat_id, is_paused=False)
                     try:
