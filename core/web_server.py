@@ -162,6 +162,51 @@ async def handle_diag(request):
         except Exception as e:
             results[f"{host}_raw"] = {"error": str(e)}
 
+    # Check outgoing IP
+    out_ip = {}
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as ipc:
+            rip = await ipc.get("https://api.ipify.org?format=json")
+            out_ip = rip.json()
+    except Exception as eip:
+        out_ip = {"error": str(eip)}
+    results["outgoing_ip"] = out_ip
+
+    # Test downloading from CDN directly
+    test_stream_url = "https://bcdnxw.hakunaymatata.com/resource/b95385b7a7b55d3565b078916bf71361.mp4?sign=cc218e329be6130ebc4b2b1a740ab8fa&t=1788879806"
+    cdn_tests = {}
+
+    # Test 1: Python subprocess curl -I
+    import subprocess
+    try:
+        cp = subprocess.run(["curl", "-I", "-s", test_stream_url], capture_output=True, text=True, timeout=5)
+        cdn_tests["curl_I_default"] = cp.stdout[:300] or cp.stderr[:200]
+    except Exception as ec:
+        cdn_tests["curl_I_default"] = str(ec)
+
+    # Test 2: curl with http2 vs http1.1
+    try:
+        cp2 = subprocess.run(["curl", "--http2", "-I", "-s", test_stream_url], capture_output=True, text=True, timeout=5)
+        cdn_tests["curl_http2"] = cp2.stdout[:300] or cp2.stderr[:200]
+    except Exception as ec2:
+        cdn_tests["curl_http2"] = str(ec2)
+
+    # Test 3: curl without headers vs with browser headers
+    try:
+        cp3 = subprocess.run(["curl", "-r", "0-1000", "-s", "-o", "/dev/null", "-w", "%{http_code}", test_stream_url], capture_output=True, text=True, timeout=5)
+        cdn_tests["curl_range_http_code"] = cp3.stdout
+    except Exception as ec3:
+        cdn_tests["curl_range_http_code"] = str(ec3)
+
+    # Test 4: httpx with and without headers
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as htc:
+            rh1 = await htc.get(test_stream_url, headers={"Range": "bytes=0-1000"})
+            cdn_tests["httpx_plain"] = {"status": rh1.status_code, "headers": dict(rh1.headers)}
+    except Exception as eh1:
+        cdn_tests["httpx_plain"] = str(eh1)
+
+    results["cdn_tests"] = cdn_tests
     return web.json_response({"auth_ok": auth_ok, "results": results})
 
 
