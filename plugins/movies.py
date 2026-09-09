@@ -5,6 +5,7 @@ Integrates our high-performance local caching & garbage collection engine.
 """
 
 import os
+import re
 import time
 import asyncio
 from pyrogram import Client, filters, enums
@@ -63,6 +64,63 @@ def chunk_buttons(buttons, n):
     return [buttons[i:i + n] for i in range(0, len(buttons), n)]
 
 
+def get_search_results_panel(session_data):
+    query_text = session_data.get("base_query") or session_data.get("query", "")
+    items = session_data.get("search_results", [])
+    allowed_uid = session_data.get("requester_id", 0)
+    
+    caption_lines = [
+        HEADER.strip(),
+        "",
+        f"‣ <b>Sᴇᴀʀᴄʜ Rᴇsᴜʟᴛs :</b> <code>{query_text}</code>",
+        "<i>Neeche diye gaye number par click karke select karein:</i>",
+        ""
+    ]
+
+    buttons = []
+    for idx, itm in enumerate(items[:6], 1):
+        is_ser = itm.subjectType == SubjectType.TV_SERIES or int(getattr(itm, "subjectType", 1)) == 2
+        type_name = "Series" if is_ser else "Movie"
+        
+        t_lower = itm.title.lower()
+        if "hindi" in t_lower:
+            lang_badge = " <code>[HINDI]</code>"
+            btn_tag = "[Hɪɴᴅɪ] "
+        elif "english" in t_lower:
+            lang_badge = " <code>[ENG]</code>"
+            btn_tag = "[Eɴɢ] "
+        else:
+            lang_badge = ""
+            btn_tag = f"[{'Sᴇʀɪᴇs' if is_ser else 'Mᴏᴠɪᴇ'}] "
+        
+        s_match = re.search(r'\bS\d+(-S\d+)?\b', itm.title, re.IGNORECASE)
+        season_str = f" ({s_match.group(0).upper()})" if s_match else ""
+
+        clean_name = re.sub(r'\[.*?\]', '', itm.title).strip()
+        clean_name = re.sub(r'\s+S\d+(-S\d+)?', '', clean_name, flags=re.IGNORECASE).strip()
+        clean_name = clean_name.title()
+        
+        caption_lines.append(f"<b>{idx}.</b> {clean_name}{lang_badge}{season_str} • <i>{type_name}</i>")
+        
+        if len(clean_name) > 14:
+            btn_short = clean_name[:13].strip() + "…"
+        else:
+            btn_short = clean_name
+        
+        btn_label = f"{idx}. {btn_tag}{btn_short}"
+        buttons.append([
+            InlineKeyboardButton(
+                btn_label,
+                callback_data=f"VOD|select|{allowed_uid}|{itm.subjectId}",
+                style="primary"
+            )
+        ])
+
+    buttons.append([InlineKeyboardButton("Cʟᴏsᴇ", callback_data="vcplay_close", style="danger")])
+    caption = "\n".join(caption_lines)
+    return caption, InlineKeyboardMarkup(buttons)
+
+
 async def get_season_panel(session_data):
     clean_title = session_data.get("title", "")
     allowed_uid = session_data.get("requester_id", 0)
@@ -97,7 +155,9 @@ async def get_season_panel(session_data):
     rows = chunk_buttons(buttons, 3)
     chat_id = session_data.get("chat_id", 0)
     back_row = []
-    if session_data.get("available_langs"):
+    if session_data.get("search_results") and len(session_data.get("search_results", [])) > 1:
+        back_row.append(InlineKeyboardButton("◀ Bᴀᴄᴋ", callback_data=f"VOD|back_to_results|{allowed_uid}", style="primary"))
+    elif session_data.get("available_langs"):
         back_row.append(InlineKeyboardButton("◀ Bᴀᴄᴋ", callback_data=f"opt_lang_{chat_id}", style="primary"))
     back_row.append(InlineKeyboardButton("Cʟᴏsᴇ", callback_data="vcplay_close", style="danger"))
     rows.append(back_row)
@@ -151,7 +211,6 @@ def get_episode_panel(session_data):
 
 
 async def select_vod_item(chat_id: int, item: SearchResultsItem, status_msg, user_id: int):
-    import re
     session_data = vod_sessions.get(chat_id)
     if not session_data:
         return
@@ -160,17 +219,39 @@ async def select_vod_item(chat_id: int, item: SearchResultsItem, status_msg, use
     session_data["chosen_lang"] = "hi" if "hindi" in item.title.lower() else "en"
     clean_title = re.sub(r'\[.*?\]', '', item.title).strip()
     clean_title = re.sub(r'\s+S\d+(-S\d+)?', '', clean_title, flags=re.IGNORECASE).strip()
+    clean_title = clean_title.title()
     session_data["title"] = clean_title
         
     is_series = session_data["current_item"].subjectType == SubjectType.TV_SERIES or int(getattr(session_data["current_item"], "subjectType", 1)) == 2
     
     if is_series:
-        from core.vod_scraper import fetch_tv_details
-        details = await fetch_tv_details(session_data["session"], session_data["current_item"])
-        if details and details.resource and details.resource.seasons:
-            session_data["seasons"] = details.resource.seasons
-            caption, keyboard = await get_season_panel(session_data)
-            await safe_edit(status_msg, caption, keyboard)
+        await safe_edit(
+            status_msg,
+            f"{HEADER}‣ <b>Tɪᴛʟᴇ :</b> <b>{clean_title}</b>\n\n<i>Lᴏᴀᴅɪɴɢ Sᴇᴀsᴏɴs, ᴘʟᴇᴀsᴇ ᴡᴀɪᴛ...</i>"
+        )
+        try:
+            from core.vod_scraper import fetch_tv_details
+            details = await fetch_tv_details(session_data["session"], session_data["current_item"])
+            if details and details.resource and details.resource.seasons:
+                session_data["seasons"] = details.resource.seasons
+                caption, keyboard = await get_season_panel(session_data)
+                await safe_edit(status_msg, caption, keyboard)
+                return
+            else:
+                print(f"[MOVIES Engine] No seasons found in tv_details for {clean_title}")
+                await safe_edit(
+                    status_msg,
+                    f"{HEADER}‣ <b>Tɪᴛʟᴇ :</b> <b>{clean_title}</b>\n\n<b>Notice :</b> <i>Is series ke seasons load nahi ho sake. Kripya doosra option select karein.</i>",
+                    InlineKeyboardMarkup([[InlineKeyboardButton("◀ Bᴀᴄᴋ Tᴏ Rᴇsᴜʟᴛs", callback_data=f"VOD|back_to_results|{user_id}", style="primary")]])
+                )
+                return
+        except Exception as e:
+            print(f"[MOVIES Engine] Error fetching TV details: {e}")
+            await safe_edit(
+                status_msg,
+                f"{HEADER}‣ <b>Tɪᴛʟᴇ :</b> <b>{clean_title}</b>\n\n<b>Error :</b> <code>{e}</code>",
+                InlineKeyboardMarkup([[InlineKeyboardButton("◀ Bᴀᴄᴋ Tᴏ Rᴇsᴜʟᴛs", callback_data=f"VOD|back_to_results|{user_id}", style="primary")]])
+            )
             return
 
     # Direct movie playback without redundant intermediate screen
@@ -563,55 +644,8 @@ def register(app: Client):
                 return
 
             # Multiple search results — render clean mobile-optimized selection panel
-            caption_lines = [
-                HEADER.strip(),
-                "",
-                f"‣ <b>Sᴇᴀʀᴄʜ Rᴇsᴜʟᴛs :</b> <code>{base_query}</code>",
-                "<i>Neeche diye gaye number par click karke select karein:</i>",
-                ""
-            ]
-
-            buttons = []
-            for idx, itm in enumerate(items[:6], 1):
-                is_ser = itm.subjectType == SubjectType.TV_SERIES or int(getattr(itm, "subjectType", 1)) == 2
-                type_name = "Series" if is_ser else "Movie"
-                
-                t_lower = itm.title.lower()
-                if "hindi" in t_lower:
-                    lang_badge = " <code>[HINDI]</code>"
-                    btn_lang = "[Hɪɴᴅɪ] "
-                elif "english" in t_lower:
-                    lang_badge = " <code>[ENG]</code>"
-                    btn_lang = "[Eɴɢ] "
-                else:
-                    lang_badge = ""
-                    btn_lang = f"[{'Sᴇʀɪᴇs' if is_ser else 'Mᴏᴠɪᴇ'}] "
-                
-                s_match = re.search(r'\bS\d+(-S\d+)?\b', itm.title, re.IGNORECASE)
-                season_str = f" ({s_match.group(0).upper()})" if s_match else ""
-
-                clean_name = re.sub(r'\[.*?\]', '', itm.title).strip()
-                clean_name = re.sub(r'\s+S\d+(-S\d+)?', '', clean_name, flags=re.IGNORECASE).strip()
-                
-                caption_lines.append(f"<b>{idx}.</b> {clean_name}{lang_badge}{season_str} • <i>{type_name}</i>")
-                
-                if len(clean_name) > 15:
-                    btn_short = clean_name[:14].strip() + "…"
-                else:
-                    btn_short = clean_name
-                
-                btn_label = f"{idx}. {btn_lang}{btn_short}"
-                buttons.append([
-                    InlineKeyboardButton(
-                        btn_label,
-                        callback_data=f"VOD|select|{user_id}|{itm.subjectId}",
-                        style="primary"
-                    )
-                ])
-
-            buttons.append([InlineKeyboardButton("Cʟᴏsᴇ", callback_data="vcplay_close", style="danger")])
-            caption = "\n".join(caption_lines)
-            await safe_edit(status_msg, caption, InlineKeyboardMarkup(buttons))
+            caption, keyboard = get_search_results_panel(session_data)
+            await safe_edit(status_msg, caption, keyboard)
 
         except Exception as e:
             print(f"[MOVIES Engine] Error in /movie command: {e}")
@@ -784,13 +818,24 @@ def register(app: Client):
             return
 
         if action == "select":
-            subject_id = int(parts[3])
+            target_subject_id = str(parts[3])
             items = session_data.get("search_results", [])
-            item = next((x for x in items if x.subjectId == subject_id), None)
+            item = next((x for x in items if str(getattr(x, "subjectId", "")) == target_subject_id), None)
             if not item:
-                await query.answer("Movie details not found. Search again.", show_alert=True)
+                print(f"[MOVIES Engine DEBUG] Subject ID {target_subject_id} not found in search_results: {[getattr(x, 'subjectId', None) for x in items]}")
+                await safe_edit(
+                    query.message,
+                    f"{HEADER}<b>Movie details not found. Please search again.</b>"
+                )
                 return
             await select_vod_item(chat_id, item, query.message, allowed_uid)
+
+        elif action == "back_to_results":
+            if not session_data.get("search_results"):
+                await safe_edit(query.message, f"{HEADER}<b>Session expired. Please search again with /movie.</b>")
+                return
+            caption, keyboard = get_search_results_panel(session_data)
+            await safe_edit(query.message, caption, keyboard)
 
         elif action == "play_movie":
             await trigger_movie_playback(query, session_data, season=0, episode=0)
