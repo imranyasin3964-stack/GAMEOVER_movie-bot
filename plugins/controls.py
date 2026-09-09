@@ -873,6 +873,7 @@ def register(app: Client):
             from core.vod_scraper import get_available_languages, Session
             import re
 
+            stream_manager.menu_active[chat_id] = True
             session_data = vod_sessions.get(chat_id)
             clean_title = getattr(current, "clean_title", current.title)
             clean_title = re.sub(r'\[.*?\]', '', clean_title).strip()
@@ -880,13 +881,18 @@ def register(app: Client):
 
             if not session_data:
                 vod_sessions[chat_id] = {
+                    "chat_id": chat_id,
                     "title": clean_title,
                     "session": Session(),
                     "chosen_lang": "hi" if "hindi" in current.title.lower() else "en",
                     "chosen_season": getattr(current, "season", 1),
                     "chosen_episode": getattr(current, "episode", 1),
+                    "requester_id": callback_query.from_user.id if callback_query.from_user else 0,
+                    "requester_name": callback_query.from_user.first_name if callback_query.from_user else "User",
                 }
                 session_data = vod_sessions[chat_id]
+            else:
+                session_data["chat_id"] = chat_id
 
             current_code = session_data.get("chosen_lang", "hi" if "hindi" in current.title.lower() else "en")
             
@@ -930,13 +936,35 @@ def register(app: Client):
             parts = data.split("_")
             target_code = parts[3]
 
-            from plugins.movies import vod_sessions, trigger_movie_playback
+            from plugins.movies import vod_sessions, trigger_movie_playback, get_season_panel
+            from core.vod_scraper import get_available_languages, Session
+            import re
+
             session_data = vod_sessions.get(chat_id)
             if not session_data:
-                await callback_query.answer("Session expired. Please use /movie to search again.", show_alert=True)
-                return
+                clean_title = getattr(current, "clean_title", current.title)
+                clean_title = re.sub(r'\[.*?\]', '', clean_title).strip()
+                clean_title = re.sub(r'\s+S\d+(-S\d+)?', '', clean_title, flags=re.IGNORECASE).strip()
+                session_data = {
+                    "chat_id": chat_id,
+                    "title": clean_title,
+                    "session": Session(),
+                    "chosen_lang": "hi" if "hindi" in current.title.lower() else "en",
+                    "chosen_season": getattr(current, "season", 1),
+                    "chosen_episode": getattr(current, "episode", 1),
+                    "requester_id": callback_query.from_user.id if callback_query.from_user else 0,
+                    "requester_name": callback_query.from_user.first_name if callback_query.from_user else "User",
+                }
+                vod_sessions[chat_id] = session_data
 
+            session_data["chat_id"] = chat_id
             avail = session_data.get("available_langs", [])
+            if not avail:
+                is_ser = bool(getattr(current, "season", 0) or getattr(current, "episode", 0))
+                clean_title = session_data.get("title", current.title)
+                avail = await get_available_languages(session_data["session"], clean_title, is_series=is_ser)
+                session_data["available_langs"] = avail
+
             target_info = next((x for x in avail if x["code"] == target_code), None)
             if not target_info:
                 await callback_query.answer("Language details not found. Please try again.", show_alert=True)
@@ -944,57 +972,67 @@ def register(app: Client):
 
             target_name = target_info["name"]
             target_item = target_info["item"]
-            await callback_query.answer(f"Switching language to {target_name}...")
 
-            # Current timestamp for seamless resume in the new language
-            played_secs = int(stream_manager.get_progress(chat_id))
-
-            is_series = bool(getattr(current, "season", 0) or getattr(current, "episode", 0))
-            curr_season = getattr(current, "season", session_data.get("chosen_season", 1))
-            curr_ep = getattr(current, "episode", session_data.get("chosen_episode", 1))
-
-            if is_series:
-                from core.vod_scraper import fetch_tv_details
-                details = await fetch_tv_details(session_data["session"], target_item)
-                if details and details.resource and details.resource.seasons:
-                    target_seasons = details.resource.seasons
-                    session_data["seasons"] = target_seasons
-
-                    # Check if curr_season exists in target language (e.g. Hindi may have fewer seasons/eps)
-                    s_obj = next((s for s in target_seasons if s.se == curr_season), None)
-                    if not s_obj:
-                        s_obj = target_seasons[-1]
-                        curr_season = s_obj.se
-                        curr_ep = min(curr_ep, s_obj.maxEp)
-                    else:
-                        if curr_ep > s_obj.maxEp:
-                            curr_ep = s_obj.maxEp
-
-                    session_data["chosen_season"] = curr_season
-                    session_data["chosen_episode"] = curr_ep
-            else:
-                curr_season = 0
-                curr_ep = 0
-
-            session_data["current_item"] = target_item
-            session_data["chosen_lang"] = target_code
-            stream_manager.menu_active[chat_id] = False
-
-            # Delete old message card cleanly
-            try:
-                await callback_query.message.delete()
-            except Exception:
-                pass
-
-            clean_display_title = session_data.get("title", current.title)
-            status_placeholder = await client.send_message(
-                chat_id,
-                f"{HEADER}<b>Sᴡɪᴛᴄʜɪɴɢ Lᴀɴɢᴜᴀɢᴇ :</b> <code>{clean_display_title} [{target_name}]</code>\n"
-                f"<i>Naya audio stream download karke play kiya ja raha hai...</i>"
+            is_series = bool(getattr(current, "season", 0) or getattr(current, "episode", 0)) or (
+                getattr(target_item, "subjectType", None) == SubjectType.TV_SERIES or int(getattr(target_item, "subjectType", 1)) == 2
             )
 
-            await trigger_movie_playback(status_placeholder, session_data, season=curr_season, episode=curr_ep, force_seek=played_secs)
-            return
+            # Update session details
+            session_data["current_item"] = target_item
+            session_data["chosen_lang"] = target_code
+            session_data["chosen_lang_name"] = target_name
+            session_data["requester_id"] = callback_query.from_user.id if callback_query.from_user else 0
+            session_data["requester_name"] = callback_query.from_user.first_name if callback_query.from_user else "User"
+
+            if is_series:
+                await callback_query.answer(f"Fetching {target_name} seasons...")
+                from core.vod_scraper import fetch_tv_details
+                details = await fetch_tv_details(session_data["session"], target_item)
+                target_seasons = details.resource.seasons if (details and details.resource and details.resource.seasons) else []
+                session_data["seasons"] = target_seasons
+
+                if target_seasons:
+                    # Keep menu_active True so live_ui_updater won't overwrite the season panel
+                    stream_manager.menu_active[chat_id] = True
+                    caption, keyboard = await get_season_panel(session_data)
+                    await edit_styled_caption(chat_id, callback_query.message.id, caption, keyboard)
+                    return
+                else:
+                    # Fallback to direct play if seasons list empty
+                    stream_manager.menu_active[chat_id] = False
+                    status_placeholder = await client.send_message(
+                        chat_id,
+                        f"{HEADER}<b>Sᴡɪᴛᴄʜɪɴɢ Lᴀɴɢᴜᴀɢᴇ :</b> <code>{session_data.get('title', current.title)} [{target_name}]</code>\n"
+                        f"<i>Downloading {target_name} stream...</i>"
+                    )
+                    await trigger_movie_playback(status_placeholder, session_data, season=1, episode=1, replace_stream=True)
+                    return
+            else:
+                # Movies: cut old stream, download new language stream, resume seamlessly at exact played timestamp
+                await callback_query.answer(f"Switching language to {target_name}...")
+                played_secs = int(stream_manager.get_elapsed_seconds(chat_id))
+                stream_manager.menu_active[chat_id] = False
+
+                clean_display_title = session_data.get("title", current.title)
+                status_placeholder = await client.send_message(
+                    chat_id,
+                    f"{HEADER}<b>Sᴡɪᴛᴄʜɪɴɢ Lᴀɴɢᴜᴀɢᴇ :</b> <code>{clean_display_title} [{target_name}]</code>\n"
+                    f"<i>Downloading {target_name} audio stream...</i>"
+                )
+                try:
+                    await callback_query.message.delete()
+                except Exception:
+                    pass
+
+                await trigger_movie_playback(
+                    status_placeholder,
+                    session_data,
+                    season=0,
+                    episode=0,
+                    replace_stream=True,
+                    force_seek=played_secs
+                )
+                return
 
         elif data == "vcplay_close" or data.startswith("play_close"):
             stream_manager.menu_active.pop(chat_id, None)

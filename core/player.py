@@ -903,6 +903,10 @@ class PlayerManager:
         elapsed = int(curr - start + offset)
         return max(0, elapsed)
 
+    def get_progress(self, chat_id: int) -> int:
+        """Alias for get_elapsed_seconds."""
+        return self.get_elapsed_seconds(chat_id)
+
     async def seek(self, chat_id: int, seconds: int) -> bool:
         song = queue_manager.get_current(chat_id)
         if not song:
@@ -1096,10 +1100,17 @@ async def edit_styled_caption(chat_id: int, message_id: int, caption: str, butto
             }
             timeout = aiohttp.ClientTimeout(total=5.0)
             async with aiohttp.ClientSession(timeout=timeout) as session:
-                await session.post(
+                resp = await session.post(
                     f"https://api.telegram.org/bot{token_val}/editMessageCaption",
                     json=payload
                 )
+                if resp.status != 200:
+                    text_payload = dict(payload)
+                    text_payload["text"] = text_payload.pop("caption")
+                    await session.post(
+                        f"https://api.telegram.org/bot{token_val}/editMessageText",
+                        json=text_payload
+                    )
     except Exception as e:
         print(f"[Player] edit_styled_caption error: {e}")
 
@@ -1141,16 +1152,14 @@ async def live_ui_updater(app, chat_id, message_id):
             except Exception as db_err:
                 print(f"[Player] Error saving VOD progress: {db_err}")
                 
+        # If user is currently interacting with any sub-menu (Options, Language, Quality, Seasons, etc.),
+        # pause live updates so their interactive menu is NEVER overwritten or flickered!
+        if stream_manager.menu_active.get(chat_id, False):
+            continue
+
         new_caption = get_rich_caption(song, played_secs=elapsed)
         total_sec_val = song.duration_secs if song and song.duration_secs else 0
-
-        # Check if user is currently viewing the Options sub-menu
-        if stream_manager.menu_active.get(chat_id, False):
-            from plugins.controls import get_options_menu_buttons
-            is_series = bool(getattr(song, "season", 0) or getattr(song, "episode", 0))
-            keyboard = get_options_menu_buttons(chat_id, is_series=is_series)
-        else:
-            keyboard = get_rich_control_buttons(chat_id, is_paused=False, played_secs=elapsed, total_secs=total_sec_val)
+        keyboard = get_rich_control_buttons(chat_id, is_paused=False, played_secs=elapsed, total_secs=total_sec_val)
         
         try:
             # Single atomic Bot API update preserving colored button styles (no flicker)

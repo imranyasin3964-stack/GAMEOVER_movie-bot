@@ -146,16 +146,24 @@ def _patched_btn_init(self, *args, **kwargs):
     self.style = style  # always store, even if None
 pyrogram.types.InlineKeyboardButton.__init__ = _patched_btn_init
 
-def _markup_to_bot_api_json(markup: InlineKeyboardMarkup) -> list:
-    """Convert Pyrogram InlineKeyboardMarkup → Bot API JSON with style support."""
+def _markup_to_bot_api_json(markup) -> list:
+    """Convert Pyrogram InlineKeyboardMarkup or row list → Bot API JSON with style support."""
+    if not markup:
+        return []
+    raw_rows = getattr(markup, "inline_keyboard", markup)
+    if not isinstance(raw_rows, (list, tuple)):
+        return []
     rows = []
-    for row in markup.inline_keyboard:
+    for row in raw_rows:
         btn_row = []
         for btn in row:
-            obj = {"text": btn.text}
-            if btn.callback_data is not None:
+            if isinstance(btn, dict):
+                btn_row.append(btn)
+                continue
+            obj = {"text": getattr(btn, "text", str(btn))}
+            if getattr(btn, "callback_data", None) is not None:
                 obj["callback_data"] = btn.callback_data
-            elif btn.url is not None:
+            elif getattr(btn, "url", None) is not None:
                 obj["url"] = btn.url
             if getattr(btn, "style", None):
                 obj["style"] = btn.style

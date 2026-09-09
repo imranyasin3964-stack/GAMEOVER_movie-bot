@@ -41,35 +41,45 @@ ROYAL_HEADER = HEADER
 
 async def safe_edit(message, text, reply_markup=None):
     try:
-        from bot import send_styled
+        from core.player import edit_styled_caption
         if hasattr(message, "chat"):
             chat_id = message.chat.id
             message_id = message.id
-            if getattr(message, "photo", None):
-                try:
-                    await message.edit_caption(caption=text, reply_markup=reply_markup, parse_mode=enums.ParseMode.HTML)
-                    return message
-                except Exception:
-                    pass
         elif isinstance(message, tuple):
             chat_id, message_id = message
+        elif hasattr(message, "message") and hasattr(message.message, "chat"):
+            chat_id = message.message.chat.id
+            message_id = message.message.id
         else:
             return message
             
-        await send_styled(chat_id, text, markup=reply_markup, message_id=message_id)
+        await edit_styled_caption(chat_id, message_id, text, reply_markup)
+        return message
     except Exception as e:
         print(f"[safe_edit] Error: {e}")
 
 
 def chunk_buttons(buttons, n):
     return [buttons[i:i + n] for i in range(0, len(buttons), n)]
+
+
 async def get_season_panel(session_data):
-    title = session_data["title"]
-    allowed_uid = session_data["requester_id"]
-    seasons = session_data["seasons"]
-    is_hi = session_data.get("chosen_lang") == "hi" or ("hindi" in getattr(session_data.get("current_item"), "title", "").lower())
-    lang_tag = " [Hindi]" if is_hi else ""
-    display_title = f"{title}{lang_tag}"
+    clean_title = session_data.get("title", "")
+    allowed_uid = session_data.get("requester_id", 0)
+    seasons = session_data.get("seasons", [])
+    
+    lang_name = session_data.get("chosen_lang_name")
+    if not lang_name:
+        chosen_code = session_data.get("chosen_lang", "hi")
+        if chosen_code == "hi" or "hindi" in getattr(session_data.get("current_item"), "title", "").lower():
+            lang_name = "Hindi"
+        elif chosen_code == "ja" or "japanese" in getattr(session_data.get("current_item"), "title", "").lower():
+            lang_name = "Japanese"
+        elif chosen_code == "en" or "english" in getattr(session_data.get("current_item"), "title", "").lower():
+            lang_name = "English"
+        else:
+            lang_name = chosen_code.upper()
+    display_title = f"{clean_title} [{lang_name}]"
     
     caption = (
         f"{HEADER}"
@@ -85,18 +95,33 @@ async def get_season_panel(session_data):
         )
         
     rows = chunk_buttons(buttons, 3)
-    rows.append([InlineKeyboardButton("Cʟᴏsᴇ", callback_data="vcplay_close", style="danger")])
+    chat_id = session_data.get("chat_id", 0)
+    back_row = []
+    if session_data.get("available_langs"):
+        back_row.append(InlineKeyboardButton("◀ Bᴀᴄᴋ", callback_data=f"opt_lang_{chat_id}", style="primary"))
+    back_row.append(InlineKeyboardButton("Cʟᴏsᴇ", callback_data="vcplay_close", style="danger"))
+    rows.append(back_row)
     return caption, InlineKeyboardMarkup(rows)
 
 
 def get_episode_panel(session_data):
-    title = session_data["title"]
-    allowed_uid = session_data["requester_id"]
-    season_num = session_data["chosen_season"]
-    seasons = session_data["seasons"]
-    is_hi = session_data.get("chosen_lang") == "hi" or ("hindi" in getattr(session_data.get("current_item"), "title", "").lower())
-    lang_tag = " [Hindi]" if is_hi else ""
-    display_title = f"{title}{lang_tag}"
+    clean_title = session_data.get("title", "")
+    allowed_uid = session_data.get("requester_id", 0)
+    season_num = session_data.get("chosen_season", 1)
+    seasons = session_data.get("seasons", [])
+    
+    lang_name = session_data.get("chosen_lang_name")
+    if not lang_name:
+        chosen_code = session_data.get("chosen_lang", "hi")
+        if chosen_code == "hi" or "hindi" in getattr(session_data.get("current_item"), "title", "").lower():
+            lang_name = "Hindi"
+        elif chosen_code == "ja" or "japanese" in getattr(session_data.get("current_item"), "title", "").lower():
+            lang_name = "Japanese"
+        elif chosen_code == "en" or "english" in getattr(session_data.get("current_item"), "title", "").lower():
+            lang_name = "English"
+        else:
+            lang_name = chosen_code.upper()
+    display_title = f"{clean_title} [{lang_name}]"
     
     max_ep = 1
     for s in seasons:
@@ -501,6 +526,7 @@ def register(app: Client):
             clean_title = re.sub(r'\s+S\d+(-S\d+)?', '', clean_title, flags=re.IGNORECASE).strip()
 
             vod_sessions[chat_id] = {
+                "chat_id": chat_id,
                 "query": raw_query,
                 "base_query": base_query,
                 "requester_id": user_id,
@@ -712,9 +738,22 @@ def register(app: Client):
         print(f"[MOVIES Engine DEBUG] action={action}, allowed_uid={allowed_uid}, requester_id={requester_id}")
 
         if allowed_uid != 0 and requester_id != allowed_uid:
-            print(f"[MOVIES Engine DEBUG] Access denied: requester_id {requester_id} != allowed_uid {allowed_uid}")
-            await query.answer("Sirf wahi click kar sakta hai jisne search start kiya tha!", show_alert=True)
-            return
+            is_adm = False
+            try:
+                from config import Config
+                from plugins.admin import is_sudo_user
+                if requester_id in (Config.OWNER_ID, 6805412676) or is_sudo_user(requester_id):
+                    is_adm = True
+                else:
+                    member = await client.get_chat_member(chat_id, requester_id)
+                    if member.status in (enums.ChatMemberStatus.ADMINISTRATOR, enums.ChatMemberStatus.OWNER):
+                        is_adm = True
+            except Exception:
+                pass
+            if not is_adm:
+                print(f"[MOVIES Engine DEBUG] Access denied: requester_id {requester_id} != allowed_uid {allowed_uid}")
+                await query.answer("Sirf wahi click kar sakta hai jisne search start kiya tha!", show_alert=True)
+                return
 
         # Handle trending actions first (they don't require VOD search session data)
         if action == "trend_movies":
@@ -767,7 +806,8 @@ def register(app: Client):
         elif action == "episode":
             ep_num = int(parts[3])
             session_data["chosen_episode"] = ep_num
-            await trigger_movie_playback(query, session_data, season=session_data["chosen_season"], episode=ep_num)
+            stream_manager.menu_active[chat_id] = False
+            await trigger_movie_playback(query, session_data, season=session_data["chosen_season"], episode=ep_num, replace_stream=True)
 
         elif action == "back_to_seasons":
             await query.answer("Returning...")
@@ -884,7 +924,7 @@ def register(app: Client):
         await trigger_movie_playback(query, session_data, season=season, episode=episode, force_seek=0)
 
 
-async def trigger_movie_playback(msg_or_query, session_data: dict, season: int = 0, episode: int = 0, is_next: bool = False, force_seek: int = -1):
+async def trigger_movie_playback(msg_or_query, session_data: dict, season: int = 0, episode: int = 0, is_next: bool = False, force_seek: int = -1, replace_stream: bool = False):
     if hasattr(msg_or_query, "message"):
         message = msg_or_query.message
         chat_id = message.chat.id
@@ -900,7 +940,7 @@ async def trigger_movie_playback(msg_or_query, session_data: dict, season: int =
     subject_id = int(current_item.subjectId)
 
     # ── VOD Playback Resume Gate ──
-    if force_seek == -1 and not is_next:
+    if force_seek == -1 and not is_next and not replace_stream:
         from core.db import get_vod_progress
         saved_progress = get_vod_progress(chat_id, subject_id, season, episode)
         if saved_progress and saved_progress > 10:
@@ -909,8 +949,11 @@ async def trigger_movie_playback(msg_or_query, session_data: dict, season: int =
             
             allowed_uid = session_data.get("requester_id", 0)
             lang = session_data.get("chosen_lang", "en")
-            is_hi = (lang == "hi") or ("hindi" in getattr(current_item, "title", "").lower())
-            lang_tag = " [Hindi]" if is_hi else ""
+            lang_name = session_data.get("chosen_lang_name")
+            if not lang_name:
+                is_hi = (lang == "hi") or ("hindi" in getattr(current_item, "title", "").lower())
+                lang_name = "Hindi" if is_hi else "English"
+            lang_tag = f" [{lang_name}]"
             title_suffix = f" S{season}E{episode}" if season > 0 else ""
             display_title = f"{session_data.get('title', '').strip()}{title_suffix}{lang_tag}".strip()
             
@@ -957,8 +1000,17 @@ async def trigger_movie_playback(msg_or_query, session_data: dict, season: int =
         )
         
         lang = session_data.get("chosen_lang", "en")
-        is_hi = (lang == "hi") or ("hindi" in getattr(current_item, "title", "").lower())
-        lang_tag = " [Hindi]" if is_hi else ""
+        lang_name = session_data.get("chosen_lang_name")
+        if not lang_name:
+            if lang == "hi" or "hindi" in getattr(current_item, "title", "").lower():
+                lang_name = "Hindi"
+            elif lang == "ja" or "japanese" in getattr(current_item, "title", "").lower():
+                lang_name = "Japanese"
+            elif lang == "en" or "english" in getattr(current_item, "title", "").lower():
+                lang_name = "English"
+            else:
+                lang_name = lang.upper()
+        lang_tag = f" [{lang_name}]"
         title_suffix = f" S{season}E{episode}" if is_series else ""
         display_title = f"{session_data.get('title', '').strip()}{title_suffix}{lang_tag}".strip()
         
@@ -991,9 +1043,9 @@ async def trigger_movie_playback(msg_or_query, session_data: dict, season: int =
         song.episode = episode
         song.clean_title = session_data.get("title", song.title)
         
-        # Check if already playing - Queue if needed
+        # Check if already playing - Queue if needed (skip if replacing active stream or next episode)
         is_playing = queue_manager.is_playing(chat_id)
-        if is_playing and not is_next:
+        if is_playing and not is_next and not replace_stream:
             pos = queue_manager.add(chat_id, song)
             from plugins.controls import control_buttons
             await safe_edit(
