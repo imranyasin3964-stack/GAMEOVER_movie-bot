@@ -155,17 +155,33 @@ async def download_file(
     return False
 
 
+def get_vod_filename(song: SongInfo, mode: str = "video") -> str:
+    """
+    Returns a unique, deterministic local filename for movies and series episodes.
+    Prevents truncation collision so S1E1, S1E2, S2E1, etc., never share the same file.
+    """
+    subj = getattr(song, "subject_id", None)
+    se = getattr(song, "season", 0)
+    ep = getattr(song, "episode", 0)
+    
+    if se > 0 or ep > 0:
+        id_part = str(subj) if subj else str(abs(hash(song.title)))
+        return f"vod_{id_part}_s{se}_e{ep}_{mode}.mp4"
+    else:
+        slug = "".join(c for c in song.title if c.isalnum() or c in ("-", "_"))[:40]
+        if not slug:
+            slug = str(abs(hash(song.title)))
+        id_part = f"{subj}_" if subj else ""
+        return f"vod_{id_part}{slug}_{mode}.mp4"
+
+
 async def download_song(
     song: SongInfo,
     mode: str = "video",
     progress_callback: Optional[Callable[[int, int, int], Awaitable[None]]] = None
 ) -> Optional[str]:
     """Downloads MovieBox VOD stream locally and returns local file path."""
-    clean_id = "".join(c for c in song.title if c.isalnum() or c in ("-", "_"))[:30]
-    if not clean_id:
-        clean_id = str(abs(hash(song.title)))
-
-    output_filename = f"{clean_id}_{mode}.mp4"
+    output_filename = get_vod_filename(song, mode)
     output_path = os.path.abspath(os.path.join(DOWNLOADS_DIR, output_filename))
 
     if os.path.exists(output_path):

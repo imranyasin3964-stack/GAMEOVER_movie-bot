@@ -19,9 +19,17 @@ from pytgcalls.types import MediaStream, VideoQuality, AudioQuality
 from pytgcalls.types.raw import VideoParameters
 
 from core.queue_manager import queue_manager, SongInfo
-from core.downloader import download_song, clean_cached_file
+from core.downloader import download_song, clean_cached_file, get_vod_filename
 
 FILE_CLEANUP_DELAY = 600  # 10 minutes in seconds
+
+async def delayed_delete(app: Client, chat_id: int, message_id: int, delay: int = 6):
+    """Automatically deletes a status/notification message after a few seconds."""
+    try:
+        await asyncio.sleep(delay)
+        await app.delete_messages(chat_id, message_id)
+    except Exception:
+        pass
 
 async def delayed_clean_cached_file(file_path: str, delay: int = FILE_CLEANUP_DELAY):
     """Delete a cached file after a short delay, protecting active/queued tracks."""
@@ -188,7 +196,6 @@ class PlayerManager:
         self.idle_timers: dict[int, asyncio.Task] = {}  # per-group idle timers
         self.stream_start_time: dict[int, float] = {}   # chat_id -> start time
         self.current_seek_offset: dict[int, int] = {}   # chat_id -> seek offset in seconds
-        self.current_speed: dict[int, float] = {}       # chat_id -> playback speed (default 1.0)
         self.menu_active: dict[int, bool] = {}          # chat_id -> True if Options panel is currently open
         self.paused_time: dict[int, float] = {}         # chat_id -> pause timestamp
         self.active_message_id: dict[int, int] = {}     # chat_id -> now playing message_id
@@ -482,7 +489,6 @@ class PlayerManager:
                 self.current_seek_offset[chat_id] = force_seek
                 self.stream_start_time[chat_id] = asyncio.get_event_loop().time()
                 self.paused_time.pop(chat_id, None)
-                self.current_speed[chat_id] = 1.0
                 self.menu_active[chat_id] = False
 
             # Ensure assistant is in the group
@@ -527,10 +533,9 @@ class PlayerManager:
                 local_file = os.path.abspath(target_url)
             else:
                 from config import Config
-                clean_id = "".join(c for c in song.title if c.isalnum() or c in ("-", "_"))[:30]
-                if not clean_id:
-                    clean_id = str(abs(hash(song.title)))
-                expected_local = os.path.abspath(os.path.join(Config.DOWNLOADS_DIR, f"{clean_id}_{mode}.mp4"))
+                from config import Config
+                expected_filename = get_vod_filename(song, mode)
+                expected_local = os.path.abspath(os.path.join(Config.DOWNLOADS_DIR, expected_filename))
 
                 if os.path.exists(expected_local) and os.path.getsize(expected_local) > 100000:
                     local_file = expected_local
@@ -540,12 +545,13 @@ class PlayerManager:
                 else:
                     print(f"[Player] Downloading VOD file to downloads/ folder for: {song.title}")
                     last_progress_edit = 0
+                    status_mid = self.active_message_id.get(chat_id)
+
                     async def progress_cb(pct, down, total):
                         nonlocal last_progress_edit
                         now = time.time()
                         if now - last_progress_edit >= 4.0 or pct >= 99:
                             last_progress_edit = now
-                            status_mid = self.active_message_id.get(chat_id)
                             if status_mid and self.app:
                                 mb_down = down / (1024 * 1024)
                                 mb_tot = total / (1024 * 1024)
@@ -554,8 +560,8 @@ class PlayerManager:
                                         chat_id=chat_id,
                                         message_id=status_mid,
                                         text=f"<b>Dᴏᴡɴʟᴏᴀᴅɪɴɢ Mᴏᴠɪᴇ :</b> <code>{pct}%</code>\n"
-                                             f"‣ <b>Sɪᴢᴇ :</b> <code>{mb_down:.1f} / {mb_tot:.1f} MB</code>\n"
-                                             f"‣ <b>Sᴛᴀᴛᴜs :</b> VPS par fast download ho raha hai...",
+                                             f"‣ <b>Tɪᴛʟᴇ :</b> <code>{song.title}</code>\n"
+                                             f"‣ <b>Sɪᴢᴇ :</b> <code>{mb_down:.1f} / {mb_tot:.1f} MB</code>",
                                         disable_web_page_preview=True
                                     )
                                 except Exception:
@@ -584,17 +590,7 @@ class PlayerManager:
             # ── PyTgCalls Media Stream Setup ──
             seek_val = self.current_seek_offset.get(chat_id, 0)
             seek_str = f"-ss {seek_val}" if seek_val > 0 else ""
-            speed = self.current_speed.get(chat_id, 1.0)
-
-            if abs(speed - 1.0) > 0.01:
-                pts_factor = round(1.0 / speed, 4)
-                ffmpeg_params = (
-                    f"--base ---start -loglevel error -hide_banner {seek_str} "
-                    f"--video ---end -vf scale=1280:720,setpts={pts_factor}*PTS "
-                    f"--audio ---end -af atempo={speed}"
-                ).strip()
-            else:
-                ffmpeg_params = f"--base ---start -loglevel error -hide_banner {seek_str}".strip()
+            ffmpeg_params = f"--base ---start -loglevel error -hide_banner {seek_str}".strip()
 
             # Target 720p @ 60 FPS video parameters as instructed
             vid_params = VideoParameters(width=1280, height=720, frame_rate=60)
@@ -753,7 +749,6 @@ class PlayerManager:
     async def stop(self, chat_id: int):
         """Stop playback, clear queue, delete local cache, and leave voice chat."""
         self.skip_votes.pop(chat_id, None)
-        self.current_speed.pop(chat_id, None)
         self.menu_active.pop(chat_id, None)
         old_msg_id = self.active_message_id.pop(chat_id, None)
         if old_msg_id and self.app:
@@ -819,15 +814,16 @@ class PlayerManager:
         if is_vip:
             if query:
                 try:
-                    await query.answer("Owner/Requester override: Skipping track...")
+                    await query.answer("Skipping track...")
                 except Exception:
                     pass
             elif message:
                 try:
-                    await message.reply_text("<b>Owner/Requester override: Skipping track...</b>")
+                    m = await message.reply_text("<b>Skipping track...</b>")
+                    asyncio.create_task(delayed_delete(client, chat_id, m.id, delay=4))
                 except Exception:
                     pass
-            await self.skip(chat_id)
+            await self.skip(chat_id, user_name=user_name)
             return
 
         # 2. Regular member vote check
@@ -839,7 +835,8 @@ class PlayerManager:
             if query:
                 await query.answer(msg, show_alert=True)
             elif message:
-                await message.reply_text(f"<b>{msg}</b>")
+                m = await message.reply_text(f"<b>{msg}</b>")
+                asyncio.create_task(delayed_delete(client, chat_id, m.id, delay=4))
             return
 
         self.skip_votes[chat_id].add(user_id)
@@ -847,35 +844,29 @@ class PlayerManager:
 
         if current_votes >= 3:
             self.skip_votes.pop(chat_id, None)
-            announcement = "<b>3/3 Votes reached! Skipping track...</b>"
             if query:
                 try:
                     await query.answer("Votes complete! Skipping...")
-                    await query.message.reply_text(announcement)
                 except Exception:
                     pass
-            elif message:
-                try:
-                    await message.reply_text(announcement)
-                except Exception:
-                    pass
-            await self.skip(chat_id)
+            await self.skip(chat_id, user_name="Democratic Vote")
         else:
             feedback = (
-                "<b>GᴀᴍᴇOᴠᴇʀ Mᴏᴠɪᴇ Hᴜʙ</b>\n\n"
-                "<b>Direct skip denied! Regular members must vote.</b>\n\n"
-                f"‣ <b>Skip Vote Registered:</b> <code>{current_votes}/3 Votes</code>\n"
-                "<i>Type /vote or click Skip to add your vote!</i>"
+                f"<b>Sᴋɪᴘ Vᴏᴛᴇ Rᴇɢɪsᴛᴇʀᴇᴅ :</b> <code>{current_votes}/3 Votes</code>\n"
+                f"‣ <b>Vᴏᴛᴇʀ :</b> <code>{user_name}</code>\n"
+                f"<i>Type /vote or click Skip to vote!</i>"
             )
             if query:
                 try:
                     await query.answer(f"Vote registered: {current_votes}/3", show_alert=True)
-                    await query.message.reply_text(feedback)
+                    m = await query.message.reply_text(feedback)
+                    asyncio.create_task(delayed_delete(client, chat_id, m.id, delay=5))
                 except Exception:
                     pass
             elif message:
                 try:
-                    await message.reply_text(feedback)
+                    m = await message.reply_text(feedback)
+                    asyncio.create_task(delayed_delete(client, chat_id, m.id, delay=5))
                 except Exception:
                     pass
 
@@ -902,15 +893,14 @@ class PlayerManager:
             return False
 
     def get_elapsed_seconds(self, chat_id: int) -> int:
-        """Returns accurate media elapsed seconds considering speed and pauses."""
+        """Returns accurate media elapsed seconds considering pauses."""
         loop = asyncio.get_event_loop()
         now = loop.time()
         start = self.stream_start_time.get(chat_id, now)
         offset = self.current_seek_offset.get(chat_id, 0)
-        speed = self.current_speed.get(chat_id, 1.0)
         is_paused = chat_id in self.paused_time
         curr = self.paused_time[chat_id] if is_paused else now
-        elapsed = int((curr - start) * speed + offset)
+        elapsed = int(curr - start + offset)
         return max(0, elapsed)
 
     async def seek(self, chat_id: int, seconds: int) -> bool:
@@ -937,33 +927,108 @@ class PlayerManager:
             
         return await self.play(chat_id, song, is_seek=True)
 
-    async def set_speed(self, chat_id: int, speed: float) -> bool:
-        """Changes playback speed seamlessly at the current media offset."""
-        song = queue_manager.get_current(chat_id)
-        if not song:
-            return False
-        self.current_speed[chat_id] = speed
-        return await self.seek(chat_id, 0)
-
-    async def skip(self, chat_id: int) -> bool:
-        """Skip the current track and play next one, or stop if queue is empty."""
+    async def skip(self, chat_id: int, user_name: str = "Someone") -> bool:
+        """
+        Skip: if TV series, plays next episode. If movie/music, plays next queued track
+        or cleanly finishes queue and leaves with auto-deleting notifications.
+        """
         self.skip_votes.pop(chat_id, None)
-        self.current_speed.pop(chat_id, None)
         self.menu_active.pop(chat_id, None)
+        
+        current = queue_manager.get_current(chat_id)
         
         # Schedule cleanup of current local file after delay
         old_local = self.local_files.pop(chat_id, None)
         if old_local:
-            current_song = queue_manager.get_current(chat_id)
-            asyncio.create_task(delayed_clean_cached_file(old_local, delay=get_cleanup_delay(current_song)))
-            
+            asyncio.create_task(delayed_clean_cached_file(old_local, delay=get_cleanup_delay(current)))
+
+        # 1. Handle TV Series progression
+        is_series = bool(current and (getattr(current, "season", 0) > 0 or getattr(current, "episode", 0) > 0))
+        if is_series:
+            from plugins.movies import vod_sessions, trigger_movie_playback
+            session_data = vod_sessions.get(chat_id)
+            if session_data:
+                chosen_season = getattr(current, "season", session_data.get("chosen_season", 1))
+                chosen_episode = getattr(current, "episode", session_data.get("chosen_episode", 1))
+                seasons = session_data.get("seasons", [])
+                
+                next_season = None
+                next_episode = None
+                
+                current_season_info = next((s for s in seasons if s.se == chosen_season), None)
+                if current_season_info:
+                    if chosen_episode < current_season_info.maxEp:
+                        next_season = chosen_season
+                        next_episode = chosen_episode + 1
+                    else:
+                        for s in seasons:
+                            if s.se == chosen_season + 1:
+                                next_season = chosen_season + 1
+                                next_episode = 1
+                                break
+
+                if next_season is not None and next_episode is not None:
+                    print(f"[Player] Series Skip -> Season {next_season} Episode {next_episode} by {user_name}")
+                    # Delete old now-playing card
+                    old_msg_id = self.active_message_id.pop(chat_id, None)
+                    if old_msg_id and self.app:
+                        try:
+                            await self.app.delete_messages(chat_id, old_msg_id)
+                        except Exception:
+                            pass
+                            
+                    title_name = session_data.get("title", getattr(current, "clean_title", current.title))
+                    status_placeholder = None
+                    if self.app:
+                        try:
+                            status_placeholder = await self.app.send_message(
+                                chat_id,
+                                f"<b>Sᴋɪᴘᴘᴇᴅ Bʏ :</b> <code>{user_name}</code>\n"
+                                f"‣ <b>Nᴇxᴛ Eᴘɪsᴏᴅᴇ :</b> <code>{title_name} S{next_season}E{next_episode}</code>"
+                            )
+                            asyncio.create_task(delayed_delete(self.app, chat_id, status_placeholder.id, delay=6))
+                        except Exception:
+                            pass
+                            
+                    target_handle = status_placeholder if status_placeholder else chat_id
+                    asyncio.create_task(trigger_movie_playback(
+                        target_handle,
+                        session_data,
+                        season=next_season,
+                        episode=next_episode,
+                        is_next=True
+                    ))
+                    return True
+
+        # 2. Regular Queue Skip
         if not queue_manager.is_empty(chat_id):
             next_song = queue_manager.pop(chat_id)
             print(f"[Player] Skipping to next track: {next_song.title} in chat {chat_id}")
+            if self.app:
+                try:
+                    m = await self.app.send_message(
+                        chat_id,
+                        f"<b>Sᴋɪᴘᴘᴇᴅ Bʏ :</b> <code>{user_name}</code>\n"
+                        f"‣ <b>Nᴇxᴛ Tʀᴀᴄᴋ :</b> <code>{next_song.title}</code>"
+                    )
+                    asyncio.create_task(delayed_delete(self.app, chat_id, m.id, delay=6))
+                except Exception:
+                    pass
             return await self.change_stream(chat_id, next_song, send_card=True)
         else:
             print(f"[Player] Queue empty, stopping playback in chat {chat_id}")
             await self.stop(chat_id)
+            if self.app:
+                try:
+                    m = await self.app.send_message(
+                        chat_id,
+                        f"<b>Qᴜᴇᴜᴇ Cʟᴇᴀʀᴇᴅ</b>\n\n"
+                        f"‣ <b>Sᴋɪᴘᴘᴇᴅ Bʏ :</b> <code>{user_name}</code>\n"
+                        f"‣ <b>Sᴛᴀᴛᴜs :</b> <code>Pʟᴀʏʙᴀᴄᴋ Sᴛᴏᴘᴘᴇᴅ</code>"
+                    )
+                    asyncio.create_task(delayed_delete(self.app, chat_id, m.id, delay=6))
+                except Exception:
+                    pass
             return True
 
     async def close(self):
@@ -1082,9 +1147,8 @@ async def live_ui_updater(app, chat_id, message_id):
         # Check if user is currently viewing the Options sub-menu
         if stream_manager.menu_active.get(chat_id, False):
             from plugins.controls import get_options_menu_buttons
-            curr_spd = stream_manager.current_speed.get(chat_id, 1.0)
             is_series = bool(getattr(song, "season", 0) or getattr(song, "episode", 0))
-            keyboard = get_options_menu_buttons(chat_id, current_speed=curr_spd, is_series=is_series)
+            keyboard = get_options_menu_buttons(chat_id, is_series=is_series)
         else:
             keyboard = get_rich_control_buttons(chat_id, is_paused=False, played_secs=elapsed, total_secs=total_sec_val)
         

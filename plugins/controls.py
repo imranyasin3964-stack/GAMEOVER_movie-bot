@@ -78,8 +78,8 @@ def get_rich_control_buttons(chat_id: int, is_paused: bool = False, played_secs:
         bar_str = "🔘─────────"
 
     progress_btn = InlineKeyboardButton(f"{played_str} {bar_str} {total_str}", callback_data=f"play_progress_{chat_id}")
-    options_btn = InlineKeyboardButton("O P T I O N S", callback_data=f"play_options_{chat_id}", style="primary")
-    close_btn = InlineKeyboardButton("C L O S E", callback_data=f"play_close_{chat_id}", style="danger")
+    options_btn = InlineKeyboardButton("Oᴘᴛɪᴏɴs", callback_data=f"play_options_{chat_id}", style="primary")
+    close_btn = InlineKeyboardButton("Cʟᴏsᴇ", callback_data=f"play_close_{chat_id}", style="danger")
 
     return InlineKeyboardMarkup([
         [btn_play, btn_pause, btn_replay, btn_skip, btn_stop],
@@ -88,8 +88,8 @@ def get_rich_control_buttons(chat_id: int, is_paused: bool = False, played_secs:
     ])
 
 
-def get_options_menu_buttons(chat_id: int, current_speed: float = 1.0, is_series: bool = False) -> InlineKeyboardMarkup:
-    """Returns styled options menu panel with quick jumps, speed controls, series nav, and return buttons."""
+def get_options_menu_buttons(chat_id: int, is_series: bool = False) -> InlineKeyboardMarkup:
+    """Returns styled options menu panel with quick jumps, series nav, and return buttons."""
     # Row 1: Quick Movie Jumps (4 equal-width buttons)
     jump_m10 = InlineKeyboardButton("- 10s", callback_data=f"opt_seek_{chat_id}_-10", style="primary")
     jump_p10 = InlineKeyboardButton("+ 10s", callback_data=f"opt_seek_{chat_id}_10", style="primary")
@@ -97,16 +97,7 @@ def get_options_menu_buttons(chat_id: int, current_speed: float = 1.0, is_series
     jump_p3m = InlineKeyboardButton("+ 3ᴍ", callback_data=f"opt_seek_{chat_id}_180", style="primary")
     row_jumps = [jump_m10, jump_p10, jump_m3m, jump_p3m]
 
-    # Row 2: Playback Speed (4 equal-width buttons with active green indicator)
-    speeds = [0.75, 1.0, 1.25, 1.5]
-    row_speed = []
-    for spd in speeds:
-        if abs(spd - current_speed) < 0.01:
-            row_speed.append(InlineKeyboardButton(f"• {spd}x •", callback_data=f"opt_speed_{chat_id}_{spd}", style="success"))
-        else:
-            row_speed.append(InlineKeyboardButton(f"{spd}x", callback_data=f"opt_speed_{chat_id}_{spd}", style="primary"))
-
-    # Row 3: Series Navigator or Movie Restart
+    # Row 2: Series Navigator or Movie Restart
     if is_series:
         btn_prev = InlineKeyboardButton("◀ Pʀᴇᴠ Eᴘ", callback_data=f"opt_ep_prev_{chat_id}", style="primary")
         btn_eps = InlineKeyboardButton("Eᴘɪsᴏᴅᴇs", callback_data=f"opt_ep_list_{chat_id}", style="primary")
@@ -116,14 +107,13 @@ def get_options_menu_buttons(chat_id: int, current_speed: float = 1.0, is_series
         btn_restart = InlineKeyboardButton("↺ Sᴛᴀʀᴛ Oᴠᴇʀ", callback_data=f"opt_restart_{chat_id}", style="primary")
         row_nav = [btn_restart]
 
-    # Row 4: Return & Close
+    # Row 3: Return & Close
     btn_back = InlineKeyboardButton("◀ Bᴀᴄᴋ", callback_data=f"opt_back_{chat_id}", style="success")
-    btn_close = InlineKeyboardButton("C L O S E", callback_data=f"play_close_{chat_id}", style="danger")
+    btn_close = InlineKeyboardButton("Cʟᴏsᴇ", callback_data=f"play_close_{chat_id}", style="danger")
     row_close = [btn_back, btn_close]
 
     return InlineKeyboardMarkup([
         row_jumps,
-        row_speed,
         row_nav,
         row_close
     ])
@@ -227,12 +217,15 @@ def register(app: Client):
         chat_id = message.chat.id
         print(f"\n[Cmd] /stop in chat {chat_id}")
         await stream_manager.stop(chat_id)
-        await message.reply_text(
-            f"{HEADER}"
-            f"<b>Playback stopped.</b>\n"
-            f"‣ Queue cleared. Use <code>/movie</code> to start again!",
+        user_name = message.from_user.first_name if message.from_user else "Someone"
+        m = await message.reply_text(
+            f"{HEADER}<b>Pʟᴀʏʙᴀᴄᴋ Sᴛᴏᴘᴘᴇᴅ</b>\n\n"
+            f"‣ <b>Rᴇǫᴜᴇsᴛᴇᴅ Bʏ :</b> <code>{user_name}</code>\n"
+            f"‣ <b>Sᴛᴀᴛᴜs :</b> <code>Qᴜᴇᴜᴇ Cʟᴇᴀʀᴇᴅ</code>",
             parse_mode=enums.ParseMode.HTML
         )
+        from core.player import delayed_delete
+        asyncio.create_task(delayed_delete(client, chat_id, m.id, delay=6))
 
     @app.on_message(filters.command(["pause"]) & filters.group)
     async def pause_command(client: Client, message: Message):
@@ -715,9 +708,8 @@ def register(app: Client):
                 await callback_query.answer("Nothing is playing!", show_alert=True)
                 return
             stream_manager.menu_active[chat_id] = True
-            curr_spd = stream_manager.current_speed.get(chat_id, 1.0)
             is_series = bool(getattr(current, "season", 0) or getattr(current, "episode", 0))
-            opts_kb = get_options_menu_buttons(chat_id, current_speed=curr_spd, is_series=is_series)
+            opts_kb = get_options_menu_buttons(chat_id, is_series=is_series)
             elapsed = stream_manager.get_elapsed_seconds(chat_id)
             caption = get_rich_caption(current, played_secs=elapsed)
             await edit_styled_caption(chat_id, callback_query.message.id, caption, opts_kb)
@@ -748,25 +740,8 @@ def register(app: Client):
             await callback_query.answer(f"Seeking {sign}{seconds}s...")
             await stream_manager.seek(chat_id, seconds)
             
-            curr_spd = stream_manager.current_speed.get(chat_id, 1.0)
             is_series = bool(getattr(current, "season", 0) or getattr(current, "episode", 0))
-            opts_kb = get_options_menu_buttons(chat_id, current_speed=curr_spd, is_series=is_series)
-            elapsed = stream_manager.get_elapsed_seconds(chat_id)
-            caption = get_rich_caption(current, played_secs=elapsed)
-            await edit_styled_caption(chat_id, callback_query.message.id, caption, opts_kb)
-            return
-
-        elif data.startswith("opt_speed_"):
-            if not current:
-                await callback_query.answer("Nothing is playing!", show_alert=True)
-                return
-            parts = data.split("_")
-            target_speed = float(parts[3])
-            await callback_query.answer(f"Playback speed: {target_speed}x")
-            await stream_manager.set_speed(chat_id, target_speed)
-            
-            is_series = bool(getattr(current, "season", 0) or getattr(current, "episode", 0))
-            opts_kb = get_options_menu_buttons(chat_id, current_speed=target_speed, is_series=is_series)
+            opts_kb = get_options_menu_buttons(chat_id, is_series=is_series)
             elapsed = stream_manager.get_elapsed_seconds(chat_id)
             caption = get_rich_caption(current, played_secs=elapsed)
             await edit_styled_caption(chat_id, callback_query.message.id, caption, opts_kb)
@@ -778,9 +753,8 @@ def register(app: Client):
                 return
             await callback_query.answer("Restarting from beginning...")
             await stream_manager.seek(chat_id, -999999)
-            curr_spd = stream_manager.current_speed.get(chat_id, 1.0)
             is_series = bool(getattr(current, "season", 0) or getattr(current, "episode", 0))
-            opts_kb = get_options_menu_buttons(chat_id, current_speed=curr_spd, is_series=is_series)
+            opts_kb = get_options_menu_buttons(chat_id, is_series=is_series)
             caption = get_rich_caption(current, played_secs=0)
             await edit_styled_caption(chat_id, callback_query.message.id, caption, opts_kb)
             return
@@ -806,14 +780,38 @@ def register(app: Client):
                 target_ep = curr_ep - 1
                 await callback_query.answer(f"Loading Episode {target_ep}...")
                 stream_manager.menu_active[chat_id] = False
-                await trigger_movie_playback(callback_query, session_data, season=curr_season, episode=target_ep, is_next=True)
+                
+                try:
+                    await callback_query.message.delete()
+                except Exception:
+                    pass
+                    
+                status_placeholder = await client.send_message(
+                    chat_id,
+                    f"<b>Lᴏᴀᴅɪɴɢ Eᴘɪsᴏᴅᴇ :</b> <code>{session_data.get('title', current.title)} S{curr_season}E{target_ep}</code>\n"
+                    f"<i>Server se connect ho raha hai...</i>"
+                )
+                await trigger_movie_playback(status_placeholder, session_data, season=curr_season, episode=target_ep, is_next=True)
                 return
+
             elif action_type == "next":
                 target_ep = curr_ep + 1
                 await callback_query.answer(f"Loading Episode {target_ep}...")
                 stream_manager.menu_active[chat_id] = False
-                await trigger_movie_playback(callback_query, session_data, season=curr_season, episode=target_ep, is_next=True)
+                
+                try:
+                    await callback_query.message.delete()
+                except Exception:
+                    pass
+                    
+                status_placeholder = await client.send_message(
+                    chat_id,
+                    f"<b>Lᴏᴀᴅɪɴɢ Nᴇxᴛ Eᴘɪsᴏᴅᴇ :</b> <code>{session_data.get('title', current.title)} S{curr_season}E{target_ep}</code>\n"
+                    f"<i>Server se connect ho raha hai...</i>"
+                )
+                await trigger_movie_playback(status_placeholder, session_data, season=curr_season, episode=target_ep, is_next=True)
                 return
+
             elif action_type == "list":
                 await callback_query.answer("Opening episodes list...")
                 ep_caption, ep_markup = get_episode_panel(session_data)

@@ -45,6 +45,12 @@ async def safe_edit(message, text, reply_markup=None):
         if hasattr(message, "chat"):
             chat_id = message.chat.id
             message_id = message.id
+            if getattr(message, "photo", None):
+                try:
+                    await message.edit_caption(caption=text, reply_markup=reply_markup, parse_mode=enums.ParseMode.HTML)
+                    return message
+                except Exception:
+                    pass
         elif isinstance(message, tuple):
             chat_id, message_id = message
         else:
@@ -881,7 +887,8 @@ async def trigger_movie_playback(msg_or_query, session_data: dict, season: int =
     seek_offset = force_seek if force_seek >= 0 else 0
     session_data["force_seek"] = seek_offset
 
-    await safe_edit(message, f"{HEADER}<b>Fetching Movie...</b>\n<i>Server se connection kiya ja raha hai...</i>")
+    label = "Eᴘɪsᴏᴅᴇ" if is_series else "Mᴏᴠɪᴇ"
+    await safe_edit(message, f"{HEADER}<b>Fᴇᴛᴄʜɪɴɢ {label}...</b>\n<i>Server se stream fetch ki ja rahi hai...</i>")
     
     try:
         # Resolve stream link directly from current selected item
@@ -952,6 +959,8 @@ async def trigger_movie_playback(msg_or_query, session_data: dict, season: int =
             stream_manager.active_message_id[chat_id] = msg_or_query.message.id
         elif isinstance(msg_or_query, tuple):
             stream_manager.active_message_id[chat_id] = msg_or_query[1]
+        elif hasattr(msg_or_query, "id"):
+            stream_manager.active_message_id[chat_id] = msg_or_query.id
         force_seek = session_data.get("force_seek", 0)
         success = await stream_manager.play(chat_id, song, send_card=True, force_seek=force_seek)
         if success:
