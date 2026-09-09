@@ -55,6 +55,10 @@ def get_admin_panel_markup() -> InlineKeyboardMarkup:
             InlineKeyboardButton("Mᴀɴᴀɢᴇ Vɪᴅᴇᴏs", callback_data="admin_manage_videos", style="primary")
         ],
         [
+            InlineKeyboardButton("Aᴜᴛʜ Usᴇʀs", callback_data="admin_auth_panel", style="primary"),
+            InlineKeyboardButton("Cʟᴏɴᴇ Bᴏᴛs", callback_data="admin_clones_panel|0", style="primary")
+        ],
+        [
             InlineKeyboardButton("Cʟᴏsᴇ", callback_data="admin_close", style="danger")
         ]
     ])
@@ -196,6 +200,62 @@ def get_status_groups_markup(groups: list, page: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(buttons)
 
 
+def get_auth_panel_markup() -> InlineKeyboardMarkup:
+    from core.db import get_global_auth_users
+    users = get_global_auth_users()
+    buttons = []
+    for u in users[:10]:
+        name = u.get("first_name") or f"User {u['user_id']}"
+        if len(name) > 12:
+            name = name[:11] + "…"
+        buttons.append([
+            InlineKeyboardButton(f"{name} ({u['user_id']})", callback_data="admin_noop", style="primary"),
+            InlineKeyboardButton("❌ Rᴇᴍᴏᴠᴇ", callback_data=f"admin_del_auth_{u['user_id']}", style="danger")
+        ])
+    buttons.append([
+        InlineKeyboardButton("➕ Aᴅᴅ Aᴜᴛʜ Usᴇʀ", callback_data="admin_add_auth_prompt", style="success")
+    ])
+    buttons.append([
+        InlineKeyboardButton("Bᴀᴄᴋ Tᴏ Dᴀsʜʙᴏᴀʀᴅ", callback_data="admin_back", style="primary"),
+        InlineKeyboardButton("Cʟᴏsᴇ", callback_data="admin_close", style="danger")
+    ])
+    return InlineKeyboardMarkup(buttons)
+
+
+def get_clones_panel_markup(page: int = 0) -> InlineKeyboardMarkup:
+    from core.db import get_all_cloned_bots
+    clones = get_all_cloned_bots(status=None)
+    page_size = 5
+    total_pages = max(1, (len(clones) + page_size - 1) // page_size)
+    page = max(0, min(page, total_pages - 1))
+    
+    start_idx = page * page_size
+    current_clones = clones[start_idx:start_idx + page_size]
+    
+    buttons = []
+    for c in current_clones:
+        u_name = c.get("bot_username") or str(c["bot_id"])
+        o_id = c.get("owner_id", 0)
+        buttons.append([
+            InlineKeyboardButton(f"@{u_name} (Owner: {o_id})", callback_data="admin_noop", style="primary"),
+            InlineKeyboardButton("🗑️ Dᴇʟᴇᴛᴇ", callback_data=f"admin_del_clone_{c['bot_id']}", style="danger")
+        ])
+        
+    nav_row = []
+    if page > 0:
+        nav_row.append(InlineKeyboardButton("◀ Pʀᴇᴠ", callback_data=f"admin_clones_panel|{page-1}", style="primary"))
+    if page < total_pages - 1:
+        nav_row.append(InlineKeyboardButton("Nᴇxᴛ ▶", callback_data=f"admin_clones_panel|{page+1}", style="primary"))
+    if nav_row:
+        buttons.append(nav_row)
+        
+    buttons.append([
+        InlineKeyboardButton("Bᴀᴄᴋ Tᴏ Dᴀsʜʙᴏᴀʀᴅ", callback_data="admin_back", style="primary"),
+        InlineKeyboardButton("Cʟᴏsᴇ", callback_data="admin_close", style="danger")
+    ])
+    return InlineKeyboardMarkup(buttons)
+
+
 def register(app: Client):
 
     def is_admin_filter(_, __, message: Message) -> bool:
@@ -258,6 +318,50 @@ def register(app: Client):
     async def admin_text_interceptor(client: Client, message: Message):
         uid = message.from_user.id if message.from_user else 0
         state = admin_states.get(uid)
+
+        if state == "waiting_for_auth_user_id":
+            admin_states.pop(uid, None)
+            text = message.text.strip()
+            target_uid = None
+            target_username = ""
+            target_first_name = ""
+            try:
+                if text.isdigit():
+                    target_uid = int(text)
+                else:
+                    u_obj = await client.get_users(text)
+                    if u_obj:
+                        target_uid = u_obj.id
+                        target_username = u_obj.username or ""
+                        target_first_name = u_obj.first_name or ""
+            except Exception:
+                pass
+
+            if not target_uid:
+                await send_styled(
+                    client=client,
+                    chat_id=message.chat.id,
+                    text=f"{ROYAL_HEADER}<b>Invalid User ID ya Username!</b>\nKripya valid numeric User ID ya @username bhejein.",
+                    markup=get_auth_panel_markup()
+                )
+                return
+
+            from core.db import add_global_auth_user
+            add_global_auth_user(target_uid, target_username, target_first_name, added_by=uid)
+            await send_styled(
+                client=client,
+                chat_id=message.chat.id,
+                text=(
+                    f"{ROYAL_HEADER}"
+                    f"✅ <b>Usᴇʀ Aᴜᴛʜᴏʀɪᴢᴇᴅ!</b>\n\n"
+                    f"‣ <b>User ID:</b> <code>{target_uid}</code>\n"
+                    f"‣ <b>Username:</b> @{target_username or 'N/A'}\n\n"
+                    f"<i>Yeh user ab globally authorized hai.</i>"
+                ),
+                markup=get_auth_panel_markup()
+            )
+            return
+
         if state != "waiting_for_broadcast":
             return
         admin_states.pop(uid, None)
@@ -623,6 +727,100 @@ def register(app: Client):
                 message_id=query.message.id
             )
 
+        elif data == "admin_auth_panel":
+            await query.answer("Authorized Users")
+            admin_states[user_id] = None
+            from core.db import get_global_auth_users
+            users = get_global_auth_users()
+            caption = (
+                f"{ROYAL_HEADER}"
+                f"<b>Aᴜᴛʜᴏʀɪᴢᴇᴅ Usᴇʀs Mᴀɴᴀɢᴇʀ</b>\n\n"
+                f"Total Authorized Users: <code>{len(users)}</code>\n\n"
+                f"<i>Yeh users bot ko control kar sakte hain aur playback manage kar sakte hain bina group admin bane.</i>\n\n"
+                f"<i>Naya user add karne ke liye 'Add Auth User' button dabayein ya <code>/auth &lt;id&gt;</code> use karein.</i>"
+            )
+            await send_styled(
+                client=client,
+                chat_id=chat_id,
+                text=caption,
+                markup=get_auth_panel_markup(),
+                message_id=query.message.id
+            )
+
+        elif data == "admin_add_auth_prompt":
+            admin_states[user_id] = "waiting_for_auth_user_id"
+            await query.answer("Send User ID or Username")
+            await send_styled(
+                client=client,
+                chat_id=chat_id,
+                text=(
+                    f"{ROYAL_HEADER}"
+                    f"<b>Aᴅᴅ Aᴜᴛʜ Usᴇʀ Mᴏᴅᴇ</b>\n\n"
+                    f"Kripya us user ka <b>Telegram User ID</b> ya <b>@username</b> chat mein bhejein.\n\n"
+                    f"<i>Cancel karne ke liye /admin type karein.</i>"
+                ),
+                message_id=query.message.id
+            )
+
+        elif data.startswith("admin_del_auth_"):
+            target_uid = int(data.replace("admin_del_auth_", ""))
+            from core.db import remove_global_auth_user
+            remove_global_auth_user(target_uid)
+            await query.answer(f"Removed User {target_uid} from Auth!", show_alert=True)
+            await send_styled(
+                client=client,
+                chat_id=chat_id,
+                text=(
+                    f"{ROYAL_HEADER}"
+                    f"<b>Aᴜᴛʜᴏʀɪᴢᴇᴅ Usᴇʀs Mᴀɴᴀɢᴇʀ</b>\n\n"
+                    f"User <code>{target_uid}</code> ko remove kar diya gaya hai."
+                ),
+                markup=get_auth_panel_markup(),
+                message_id=query.message.id
+            )
+
+        elif data.startswith("admin_clones_panel"):
+            parts = data.split("|")
+            page = int(parts[1]) if len(parts) > 1 else 0
+            await query.answer("Clone Bots Manager")
+            admin_states[user_id] = None
+            from core.db import get_all_cloned_bots
+            clones = get_all_cloned_bots(status=None)
+            caption = (
+                f"{ROYAL_HEADER}"
+                f"<b>Cʟᴏɴᴇ Bᴏᴛs Mᴀɴᴀɢᴇʀ</b>\n\n"
+                f"Total Cloned Bots: <code>{len(clones)}</code>\n\n"
+                f"<i>Yeh bots hamare shared engine se live stream kar rahe hain.</i>\n\n"
+                f"<i>Kisi bot ko band karne ke liye 'Delete' button click karein.</i>"
+            )
+            await send_styled(
+                client=client,
+                chat_id=chat_id,
+                text=caption,
+                markup=get_clones_panel_markup(page),
+                message_id=query.message.id
+            )
+
+        elif data.startswith("admin_del_clone_"):
+            bot_id_to_del = int(data.replace("admin_del_clone_", ""))
+            from core.clone_manager import clone_manager
+            await clone_manager.delete_clone(bot_id_to_del)
+            await query.answer("Clone bot stopped and deleted!", show_alert=True)
+            await send_styled(
+                client=client,
+                chat_id=chat_id,
+                text=(
+                    f"{ROYAL_HEADER}"
+                    f"<b>Cʟᴏɴᴇ Bᴏᴛs Mᴀɴᴀɢᴇʀ</b>\n\n"
+                    f"Bot ID <code>{bot_id_to_del}</code> ko stop aur delete kar diya gaya hai."
+                ),
+                markup=get_clones_panel_markup(0),
+                message_id=query.message.id
+            )
+
+        elif data == "admin_noop":
+            await query.answer()
+
     @app.on_callback_query(filters.regex(r"^REQ\|"))
     async def request_action_callback(client: Client, query: CallbackQuery):
         user_id = query.from_user.id if query.from_user else 0
@@ -687,3 +885,85 @@ def register(app: Client):
                 f"‣ <b>Status:</b> Rejected / Deleted"
             )
             await send_styled(client=client, chat_id=query.message.chat.id, text=alert_caption, message_id=query.message.id)
+
+    # ─── /auth and /unauth commands ───────────────────────────────────────────
+    @app.on_message(filters.command("auth") & filters.create(is_admin_filter))
+    async def auth_cmd_handler(client: Client, message: Message):
+        target_uid = None
+        target_name = ""
+        target_username = ""
+        
+        if message.reply_to_message and message.reply_to_message.from_user:
+            u = message.reply_to_message.from_user
+            target_uid = u.id
+            target_name = u.first_name or ""
+            target_username = u.username or ""
+        elif len(message.command) > 1:
+            raw = message.command[1]
+            try:
+                if raw.isdigit():
+                    target_uid = int(raw)
+                else:
+                    u = await client.get_users(raw)
+                    if u:
+                        target_uid = u.id
+                        target_name = u.first_name or ""
+                        target_username = u.username or ""
+            except Exception:
+                pass
+                
+        if not target_uid:
+            await message.reply_text(
+                f"{ROYAL_HEADER}"
+                f"<b>Usage:</b> <code>/auth &lt;user_id or @username&gt;</code> (ya kisi user ke message ko reply karein)",
+                parse_mode=enums.ParseMode.HTML
+            )
+            return
+            
+        from core.db import add_global_auth_user
+        sender_id = message.from_user.id if message.from_user else 0
+        add_global_auth_user(target_uid, target_username, target_name, added_by=sender_id)
+        await message.reply_text(
+            f"{ROYAL_HEADER}"
+            f"✅ <b>Usᴇʀ Aᴜᴛʜᴏʀɪᴢᴇᴅ Sᴜᴄᴄᴇssғᴜʟʟʏ!</b>\n\n"
+            f"‣ <b>User ID:</b> <code>{target_uid}</code>\n"
+            f"‣ <b>Name:</b> {target_name or 'User'}\n"
+            f"‣ <b>Username:</b> @{target_username or 'N/A'}\n\n"
+            f"<i>Yeh user ab globally authorized hai aur bot ko manage kar sakta hai.</i>",
+            parse_mode=enums.ParseMode.HTML
+        )
+
+    @app.on_message(filters.command("unauth") & filters.create(is_admin_filter))
+    async def unauth_cmd_handler(client: Client, message: Message):
+        target_uid = None
+        if message.reply_to_message and message.reply_to_message.from_user:
+            target_uid = message.reply_to_message.from_user.id
+        elif len(message.command) > 1:
+            raw = message.command[1]
+            try:
+                if raw.isdigit():
+                    target_uid = int(raw)
+                else:
+                    u = await client.get_users(raw)
+                    if u:
+                        target_uid = u.id
+            except Exception:
+                pass
+                
+        if not target_uid:
+            await message.reply_text(
+                f"{ROYAL_HEADER}"
+                f"<b>Usage:</b> <code>/unauth &lt;user_id or @username&gt;</code> (ya kisi user ke message ko reply karein)",
+                parse_mode=enums.ParseMode.HTML
+            )
+            return
+            
+        from core.db import remove_global_auth_user
+        remove_global_auth_user(target_uid)
+        await message.reply_text(
+            f"{ROYAL_HEADER}"
+            f"❌ <b>Usᴇʀ Uɴᴀᴜᴛʜᴏʀɪᴢᴇᴅ Sᴜᴄᴄᴇssғᴜʟʟʏ!</b>\n\n"
+            f"‣ <b>User ID:</b> <code>{target_uid}</code>\n\n"
+            f"<i>Is user se authorization permissions hata di gayi hain.</i>",
+            parse_mode=enums.ParseMode.HTML
+        )

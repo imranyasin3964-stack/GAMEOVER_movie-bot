@@ -233,6 +233,17 @@ async def start_handler(client: Client, message: Message):
     except Exception as db_err:
         print(f"[Start Alert] DB error: {db_err}")
 
+    # Handle deep-link for /start clone
+    if message.command and len(message.command) > 1 and message.command[1].lower() == "clone":
+        from plugins.clone import get_clone_guide_text, get_clone_guide_markup
+        await message.reply_text(
+            get_clone_guide_text(),
+            parse_mode=enums.ParseMode.HTML,
+            reply_markup=get_clone_guide_markup(),
+            disable_web_page_preview=True
+        )
+        return
+
     from core.db import get_setting
     start_video_file_id = get_setting("start_video_file_id")
 
@@ -254,7 +265,10 @@ async def start_handler(client: Client, message: Message):
     markup = InlineKeyboardMarkup([
         [InlineKeyboardButton("Aᴅᴅ Mᴇ Iɴ Yᴏᴜʀ Gʀᴏᴜᴘ", url=f"https://t.me/{Config.BOT_USERNAME}?startgroup=true", style="primary")],
         [InlineKeyboardButton("Hᴇʟᴘ Aɴᴅ Cᴏᴍᴍᴀɴᴅs", callback_data="help_all", style="primary")],
-        [InlineKeyboardButton("Oᴡɴᴇʀ", url=owner_link, style="primary")]
+        [
+            InlineKeyboardButton("Oᴡɴᴇʀ", url=owner_link, style="primary"),
+            InlineKeyboardButton("Cʟᴏɴᴇ Bᴏᴛ", callback_data="clone_start", style="primary")
+        ]
     ])
 
     if start_video_file_id:
@@ -340,20 +354,27 @@ async def main():
             BotCommand("random", "Random Hindi movie stream karein (Surprise Me)"),
             BotCommand("history", "Recent watch history aur saved progress dekhein"),
             BotCommand("request", "Request any missing movie/series to admin"),
+            BotCommand("clone", "Apna bot clone karein"),
         ])
         print("[Bot] Native menu commands set successfully!")
     except Exception as e:
         print(f"[Bot] Failed to set native menu commands: {e}")
 
     # Register plugins
-    from plugins import movies, welcome, admin, controls
+    from plugins import movies, welcome, admin, controls, clone
     movies.register(bot)
     welcome.register(bot)
     admin.register(bot)
     controls.register(bot)
+    clone.register(bot)
 
     # Initialize PyTgCalls streamer
     await stream_manager.init(assistant, bot)
+
+    # Initialize and load all active cloned bots
+    from core.clone_manager import clone_manager
+    clone_manager.init(bot)
+    await clone_manager.load_and_start_all()
 
     print("\n" + "="*52)
     print("   Movie Hub Bot is running LIVE!")
@@ -365,6 +386,10 @@ async def main():
         pass
     finally:
         print("\nShutting down...")
+        try:
+            await clone_manager.stop_all()
+        except Exception:
+            pass
         try:
             for chat_id in list(stream_manager._active_chats):
                 try:

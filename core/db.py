@@ -174,6 +174,31 @@ def init_db():
         )
     """)
     
+    # Table for cloned bots
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS cloned_bots (
+            bot_id INTEGER PRIMARY KEY,
+            bot_token TEXT NOT NULL,
+            bot_username TEXT,
+            bot_name TEXT,
+            owner_id INTEGER NOT NULL,
+            owner_name TEXT,
+            created_at REAL,
+            status TEXT DEFAULT 'active'
+        )
+    """)
+
+    # Table for globally authorized users
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS global_auth_users (
+            user_id INTEGER PRIMARY KEY,
+            username TEXT,
+            first_name TEXT,
+            added_by INTEGER,
+            timestamp REAL
+        )
+    """)
+
     conn.commit()
     conn.close()
 
@@ -657,3 +682,167 @@ def delete_movie_request(req_id: int):
         print(f"[DB] Error delete_movie_request: {e}")
     finally:
         conn.close()
+
+
+# ─── Cloned Bots Helper Functions ──────────────────────────────────────────
+
+def add_cloned_bot(bot_id: int, bot_token: str, bot_username: str, bot_name: str, owner_id: int, owner_name: str) -> bool:
+    """Register or update a cloned bot in the database."""
+    conn = get_db()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            INSERT INTO cloned_bots (bot_id, bot_token, bot_username, bot_name, owner_id, owner_name, created_at, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'active')
+            ON CONFLICT(bot_id) DO UPDATE SET
+                bot_token = excluded.bot_token,
+                bot_username = excluded.bot_username,
+                bot_name = excluded.bot_name,
+                owner_id = excluded.owner_id,
+                owner_name = excluded.owner_name,
+                status = 'active'
+        """, (bot_id, bot_token, bot_username, bot_name, owner_id, owner_name, time.time()))
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"[DB] Error add_cloned_bot: {e}")
+        return False
+    finally:
+        conn.close()
+
+def get_cloned_bot(bot_id: int) -> dict | None:
+    """Retrieve details of a single cloned bot by bot_id."""
+    conn = get_db()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT * FROM cloned_bots WHERE bot_id = ?", (bot_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+    except Exception as e:
+        print(f"[DB] Error get_cloned_bot: {e}")
+        return None
+    finally:
+        conn.close()
+
+def get_all_cloned_bots(status: str = "active") -> list:
+    """Get list of all cloned bots matching status, or all if status is None."""
+    conn = get_db()
+    cursor = conn.cursor()
+    try:
+        if status:
+            cursor.execute("SELECT * FROM cloned_bots WHERE status = ? ORDER BY created_at DESC", (status,))
+        else:
+            cursor.execute("SELECT * FROM cloned_bots ORDER BY created_at DESC")
+        rows = cursor.fetchall()
+        return [dict(r) for r in rows]
+    except Exception as e:
+        print(f"[DB] Error get_all_cloned_bots: {e}")
+        return []
+    finally:
+        conn.close()
+
+def get_user_cloned_bots(owner_id: int) -> list:
+    """Get all cloned bots belonging to a specific owner_id."""
+    conn = get_db()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT * FROM cloned_bots WHERE owner_id = ? AND status = 'active' ORDER BY created_at DESC", (owner_id,))
+        rows = cursor.fetchall()
+        return [dict(r) for r in rows]
+    except Exception as e:
+        print(f"[DB] Error get_user_cloned_bots: {e}")
+        return []
+    finally:
+        conn.close()
+
+def delete_cloned_bot(bot_id: int) -> bool:
+    """Permanently delete a cloned bot record."""
+    conn = get_db()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("DELETE FROM cloned_bots WHERE bot_id = ?", (bot_id,))
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"[DB] Error delete_cloned_bot: {e}")
+        return False
+    finally:
+        conn.close()
+
+def update_cloned_bot_status(bot_id: int, status: str) -> bool:
+    """Update status of a cloned bot ('active', 'stopped')."""
+    conn = get_db()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("UPDATE cloned_bots SET status = ? WHERE bot_id = ?", (status, bot_id))
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"[DB] Error update_cloned_bot_status: {e}")
+        return False
+    finally:
+        conn.close()
+
+
+# ─── Global Auth Users Helper Functions ───────────────────────────────────
+
+def add_global_auth_user(user_id: int, username: str = "", first_name: str = "", added_by: int = 0) -> bool:
+    """Add a user to global authorization list."""
+    conn = get_db()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            INSERT OR REPLACE INTO global_auth_users (user_id, username, first_name, added_by, timestamp)
+            VALUES (?, ?, ?, ?, ?)
+        """, (user_id, username, first_name, added_by, time.time()))
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"[DB] Error add_global_auth_user: {e}")
+        return False
+    finally:
+        conn.close()
+
+def remove_global_auth_user(user_id: int) -> bool:
+    """Remove a user from global authorization list."""
+    conn = get_db()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("DELETE FROM global_auth_users WHERE user_id = ?", (user_id,))
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"[DB] Error remove_global_auth_user: {e}")
+        return False
+    finally:
+        conn.close()
+
+def get_global_auth_users() -> list:
+    """Get list of all globally authorized users."""
+    conn = get_db()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT * FROM global_auth_users ORDER BY timestamp DESC")
+        rows = cursor.fetchall()
+        return [dict(r) for r in rows]
+    except Exception as e:
+        print(f"[DB] Error get_global_auth_users: {e}")
+        return []
+    finally:
+        conn.close()
+
+def is_global_auth_user(user_id: int) -> bool:
+    """Check if a user is globally authorized."""
+    if not user_id:
+        return False
+    conn = get_db()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT 1 FROM global_auth_users WHERE user_id = ?", (user_id,))
+        return cursor.fetchone() is not None
+    except Exception as e:
+        print(f"[DB] Error is_global_auth_user: {e}")
+        return False
+    finally:
+        conn.close()
+

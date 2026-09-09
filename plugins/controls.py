@@ -111,9 +111,12 @@ def get_options_menu_buttons(chat_id: int, is_series: bool = False) -> InlineKey
         btn_restart = InlineKeyboardButton("↺ Sᴛᴀʀᴛ Oᴠᴇʀ", callback_data=f"opt_restart_{chat_id}", style="primary")
         row_nav = [btn_restart]
 
-    # Row 3: Language Selector Button
+    # Row 3: Language & Clone Bot Buttons (side-by-side, equal width)
+    from config import Config
+    main_bot_user = Config.BOT_USERNAME or "Gameovermovie_bot"
     btn_lang = InlineKeyboardButton("Lᴀɴɢᴜᴀɢᴇ", callback_data=f"opt_lang_{chat_id}", style="primary")
-    row_lang = [btn_lang]
+    btn_clone = InlineKeyboardButton("Cʟᴏɴᴇ Bᴏᴛ", url=f"https://t.me/{main_bot_user}?start=clone", style="primary")
+    row_lang = [btn_lang, btn_clone]
 
     # Row 4: Return & Close
     btn_back = InlineKeyboardButton("◀ Bᴀᴄᴋ", callback_data=f"opt_back_{chat_id}", style="success")
@@ -174,8 +177,9 @@ def help_menu_markup() -> InlineKeyboardMarkup:
          InlineKeyboardButton("Aᴅᴍɪɴs",  callback_data="help_admin", style="primary"),
          InlineKeyboardButton("Oᴡɴᴇʀ",   callback_data="help_owner", style="primary")],
         [InlineKeyboardButton("Dᴇᴠs",    callback_data="help_devs",  style="primary"),
-         InlineKeyboardButton("Cʟᴏsᴇ",   callback_data="vcplay_close", style="danger")],
-        [InlineKeyboardButton("Hᴏᴍᴇ",    callback_data="help_back",  style="success")]
+         InlineKeyboardButton("Cʟᴏɴᴇ Bᴏᴛ", callback_data="help_clone", style="primary")],
+        [InlineKeyboardButton("Hᴏᴍᴇ",    callback_data="help_back",  style="success"),
+         InlineKeyboardButton("Cʟᴏsᴇ",   callback_data="vcplay_close", style="danger")]
     ])
 
 
@@ -525,19 +529,53 @@ def register(app: Client):
                         f"<b>{bot_name}</b>\n\n"
                         "A premium high-performance movie & TV series streaming bot.\n\n"
                         "<b>Fᴇᴀᴛᴜʀᴇs:</b>\n"
-                        "‣ Pure MovieBox VOD Engine\n"
+                        "‣ Pure GameOver VOD Cloud Engine\n"
                         "‣ 4K / 2K / 1080p Full HD Video\n"
                         "‣ 120 FPS / 90 FPS / 60 FPS Framerate Modes\n"
                         "‣ Movies & TV Series streaming\n"
                         "‣ Instant progress save & resume"
                     )
+                },
+                "help_clone": {
+                    "Title": "Cʟᴏɴᴇ Yᴏᴜʀ Oᴡɴ Bᴏᴛ",
+                    "Content": (
+                        "<b>Create your own Movie & Series Streaming Bot in 1 minute!</b>\n\n"
+                        "‣ <b>Zero Hosting Needed:</b> 100% cloud-hosted on our ultra-fast server.\n"
+                        "‣ <b>Shared Cloud Engine:</b> Streams directly into group voice chats in 1080p Full HD.\n"
+                        "‣ <b>Your Own Brand:</b> Your bot token, your name, your group!\n"
+                        "‣ <b>Unlimited Movies & Series:</b> Search any title, choose language, stream anytime.\n"
+                        "‣ <b>Easy Management:</b> Control playback with admin commands.\n\n"
+                        "<b>How to Create:</b>\n"
+                        "1. Go to @BotFather and create a new bot using <code>/newbot</code>.\n"
+                        "2. Copy the <b>HTTP API Token</b> given by @BotFather.\n"
+                        "3. Click <b>Cʀᴇᴀᴛᴇ Cʟᴏɴᴇ</b> button below to set up your bot instantly!"
+                    ),
+                    "CloneMarkup": True
                 }
             }
 
             if data in help_categories:
                 cat = help_categories[data]
                 await callback_query.answer(cat["Title"])
-                if cat.get("ExtraMarkup"):
+                if cat.get("CloneMarkup"):
+                    from config import Config
+                    main_bot_user = Config.BOT_USERNAME or "Gameovermovie_bot"
+                    clone_markup = InlineKeyboardMarkup([
+                        [InlineKeyboardButton(
+                            "Cʀᴇᴀᴛᴇ Cʟᴏɴᴇ",
+                            url=f"https://t.me/{main_bot_user}?start=clone",
+                            style="success"
+                        )],
+                        [InlineKeyboardButton("Hᴇʟᴘ", callback_data="help_all", style="primary"),
+                         InlineKeyboardButton("Hᴏᴍᴇ", callback_data="help_back",  style="success")],
+                        [InlineKeyboardButton("Cʟᴏsᴇ", callback_data="vcplay_close", style="danger")]
+                    ])
+                    await edit_msg(
+                        f"{HEADER}"
+                        f"<b>{cat['Title']}</b>\n\n{cat['Content']}",
+                        clone_markup
+                    )
+                elif cat.get("ExtraMarkup"):
                     users_markup = InlineKeyboardMarkup([
                         [InlineKeyboardButton(
                             "Aᴅᴅ Bᴏᴛ Tᴏ Yᴏᴜʀ Gʀᴏᴜᴘ",

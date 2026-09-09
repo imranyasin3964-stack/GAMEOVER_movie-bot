@@ -1061,8 +1061,9 @@ async def apply_styled_buttons(chat_id: int, message_id: int, buttons):
     try:
         from config import Config
         from bot import _markup_to_bot_api_json
+        from core.clone_manager import clone_manager
         import aiohttp, json
-        token_val = Config.BOT_TOKEN
+        token_val = clone_manager.get_token_for_chat(chat_id) or Config.BOT_TOKEN
         if token_val:
             edit_payload = {
                 "chat_id": chat_id,
@@ -1086,8 +1087,9 @@ async def edit_styled_caption(chat_id: int, message_id: int, caption: str, butto
     try:
         from config import Config
         from bot import _markup_to_bot_api_json
+        from core.clone_manager import clone_manager
         import aiohttp, json
-        token_val = Config.BOT_TOKEN
+        token_val = clone_manager.get_token_for_chat(chat_id) or Config.BOT_TOKEN
         if token_val:
             payload = {
                 "chat_id": chat_id,
