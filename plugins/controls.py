@@ -88,8 +88,12 @@ def get_rich_control_buttons(chat_id: int, is_paused: bool = False, played_secs:
     ])
 
 
+def chunk_buttons(buttons, n):
+    return [buttons[i:i + n] for i in range(0, len(buttons), n)]
+
+
 def get_options_menu_buttons(chat_id: int, is_series: bool = False) -> InlineKeyboardMarkup:
-    """Returns styled options menu panel with quick jumps, series nav, and return buttons."""
+    """Returns styled options menu panel with quick jumps, series nav, language selector, and return buttons."""
     # Row 1: Quick Movie Jumps (4 equal-width buttons)
     jump_m10 = InlineKeyboardButton("- 10s", callback_data=f"opt_seek_{chat_id}_-10", style="primary")
     jump_p10 = InlineKeyboardButton("+ 10s", callback_data=f"opt_seek_{chat_id}_10", style="primary")
@@ -107,7 +111,11 @@ def get_options_menu_buttons(chat_id: int, is_series: bool = False) -> InlineKey
         btn_restart = InlineKeyboardButton("↺ Sᴛᴀʀᴛ Oᴠᴇʀ", callback_data=f"opt_restart_{chat_id}", style="primary")
         row_nav = [btn_restart]
 
-    # Row 3: Return & Close
+    # Row 3: Language Selector Button
+    btn_lang = InlineKeyboardButton("Lᴀɴɢᴜᴀɢᴇ", callback_data=f"opt_lang_{chat_id}", style="primary")
+    row_lang = [btn_lang]
+
+    # Row 4: Return & Close
     btn_back = InlineKeyboardButton("◀ Bᴀᴄᴋ", callback_data=f"opt_back_{chat_id}", style="success")
     btn_close = InlineKeyboardButton("Cʟᴏsᴇ", callback_data=f"play_close_{chat_id}", style="danger")
     row_close = [btn_back, btn_close]
@@ -115,8 +123,36 @@ def get_options_menu_buttons(chat_id: int, is_series: bool = False) -> InlineKey
     return InlineKeyboardMarkup([
         row_jumps,
         row_nav,
+        row_lang,
         row_close
     ])
+
+
+def get_language_menu_buttons(chat_id: int, available_langs: list, current_code: str) -> InlineKeyboardMarkup:
+    """Returns styled language panel with Green for active language and Blue for other available languages."""
+    buttons = []
+    for l_info in available_langs:
+        code = l_info["code"]
+        name = l_info["name"]
+        is_active = (code == current_code)
+        
+        if is_active:
+            lbl = f"✓ {to_small_caps(name)}"
+            style = "success"  # Green
+            cb = f"opt_currlang_{chat_id}"
+        else:
+            lbl = to_small_caps(name)
+            style = "primary"  # Blue
+            cb = f"opt_setlang_{chat_id}_{code}"
+            
+        buttons.append(InlineKeyboardButton(lbl, callback_data=cb, style=style))
+
+    rows = chunk_buttons(buttons, 2)
+    rows.append([
+        InlineKeyboardButton("◀ Bᴀᴄᴋ", callback_data=f"play_options_{chat_id}", style="success"),
+        InlineKeyboardButton("Cʟᴏsᴇ", callback_data=f"play_close_{chat_id}", style="danger")
+    ])
+    return InlineKeyboardMarkup(rows)
 
 
 def get_rich_caption(song, played_secs: int = 0) -> str:
@@ -823,6 +859,142 @@ def register(app: Client):
                 except Exception:
                     pass
                 return
+
+        elif data.startswith("opt_currlang_"):
+            await callback_query.answer("Ye language pehle se hi chal rahi hai!", show_alert=True)
+            return
+
+        elif data.startswith("opt_lang_"):
+            if not current:
+                await callback_query.answer("Nothing is playing!", show_alert=True)
+                return
+
+            from plugins.movies import vod_sessions
+            from core.vod_scraper import get_available_languages, Session
+            import re
+
+            session_data = vod_sessions.get(chat_id)
+            clean_title = getattr(current, "clean_title", current.title)
+            clean_title = re.sub(r'\[.*?\]', '', clean_title).strip()
+            clean_title = re.sub(r'\s+S\d+(-S\d+)?', '', clean_title, flags=re.IGNORECASE).strip()
+
+            if not session_data:
+                vod_sessions[chat_id] = {
+                    "title": clean_title,
+                    "session": Session(),
+                    "chosen_lang": "hi" if "hindi" in current.title.lower() else "en",
+                    "chosen_season": getattr(current, "season", 1),
+                    "chosen_episode": getattr(current, "episode", 1),
+                }
+                session_data = vod_sessions[chat_id]
+
+            current_code = session_data.get("chosen_lang", "hi" if "hindi" in current.title.lower() else "en")
+            
+            avail = session_data.get("available_langs")
+            if not avail:
+                await callback_query.answer("Checking available languages...")
+                is_series = bool(getattr(current, "season", 0) or getattr(current, "episode", 0))
+                avail = await get_available_languages(session_data["session"], clean_title, is_series=is_series)
+                session_data["available_langs"] = avail
+            else:
+                await callback_query.answer()
+
+            # Ensure current language item exists in options
+            if not any(x["code"] == current_code for x in avail):
+                curr_lbl = "Hindi" if current_code == "hi" else ("English" if current_code == "en" else "Original")
+                curr_item = session_data.get("current_item")
+                if curr_item:
+                    avail.insert(0, {"code": current_code, "name": curr_lbl, "item": curr_item, "title": current.title})
+
+            curr_name = "Hindi" if current_code == "hi" else ("English" if current_code == "en" else "Original")
+            for l in avail:
+                if l["code"] == current_code:
+                    curr_name = l["name"]
+                    break
+
+            caption = (
+                f"{HEADER}"
+                f"‣ <b>Tɪᴛʟᴇ :</b> <b>{clean_title}</b>\n"
+                f"‣ <b>Cᴜʀʀᴇɴᴛ Lᴀɴɢᴜᴀɢᴇ :</b> <code>{curr_name}</code>\n\n"
+                f"Neeche se apni preferred <b>Lᴀɴɢᴜᴀɢᴇ</b> select karein:"
+            )
+            lang_kb = get_language_menu_buttons(chat_id, avail, current_code)
+            await edit_styled_caption(chat_id, callback_query.message.id, caption, lang_kb)
+            return
+
+        elif data.startswith("opt_setlang_"):
+            if not current:
+                await callback_query.answer("Nothing is playing!", show_alert=True)
+                return
+
+            parts = data.split("_")
+            target_code = parts[3]
+
+            from plugins.movies import vod_sessions, trigger_movie_playback
+            session_data = vod_sessions.get(chat_id)
+            if not session_data:
+                await callback_query.answer("Session expired. Please use /movie to search again.", show_alert=True)
+                return
+
+            avail = session_data.get("available_langs", [])
+            target_info = next((x for x in avail if x["code"] == target_code), None)
+            if not target_info:
+                await callback_query.answer("Language details not found. Please try again.", show_alert=True)
+                return
+
+            target_name = target_info["name"]
+            target_item = target_info["item"]
+            await callback_query.answer(f"Switching language to {target_name}...")
+
+            # Current timestamp for seamless resume in the new language
+            played_secs = int(stream_manager.get_progress(chat_id))
+
+            is_series = bool(getattr(current, "season", 0) or getattr(current, "episode", 0))
+            curr_season = getattr(current, "season", session_data.get("chosen_season", 1))
+            curr_ep = getattr(current, "episode", session_data.get("chosen_episode", 1))
+
+            if is_series:
+                from core.vod_scraper import fetch_tv_details
+                details = await fetch_tv_details(session_data["session"], target_item)
+                if details and details.resource and details.resource.seasons:
+                    target_seasons = details.resource.seasons
+                    session_data["seasons"] = target_seasons
+
+                    # Check if curr_season exists in target language (e.g. Hindi may have fewer seasons/eps)
+                    s_obj = next((s for s in target_seasons if s.se == curr_season), None)
+                    if not s_obj:
+                        s_obj = target_seasons[-1]
+                        curr_season = s_obj.se
+                        curr_ep = min(curr_ep, s_obj.maxEp)
+                    else:
+                        if curr_ep > s_obj.maxEp:
+                            curr_ep = s_obj.maxEp
+
+                    session_data["chosen_season"] = curr_season
+                    session_data["chosen_episode"] = curr_ep
+            else:
+                curr_season = 0
+                curr_ep = 0
+
+            session_data["current_item"] = target_item
+            session_data["chosen_lang"] = target_code
+            stream_manager.menu_active[chat_id] = False
+
+            # Delete old message card cleanly
+            try:
+                await callback_query.message.delete()
+            except Exception:
+                pass
+
+            clean_display_title = session_data.get("title", current.title)
+            status_placeholder = await client.send_message(
+                chat_id,
+                f"{HEADER}<b>Sᴡɪᴛᴄʜɪɴɢ Lᴀɴɢᴜᴀɢᴇ :</b> <code>{clean_display_title} [{target_name}]</code>\n"
+                f"<i>Naya audio stream download karke play kiya ja raha hai...</i>"
+            )
+
+            await trigger_movie_playback(status_placeholder, session_data, season=curr_season, episode=curr_ep, force_seek=played_secs)
+            return
 
         elif data == "vcplay_close" or data.startswith("play_close"):
             stream_manager.menu_active.pop(chat_id, None)

@@ -393,3 +393,76 @@ async def resolve_stream_link(session: Session, item: SearchResultsItem, season:
             }
             
     raise Exception("No active video streams found on servers.")
+
+
+async def get_available_languages(session: Session, clean_title: str, is_series: bool = True) -> list[dict]:
+    """
+    Search MovieBox for all available language dubs/releases of a title (Hindi, Japanese, English, Russian, etc.).
+    Returns deduplicated list of available language items.
+    """
+    seen_subjects = set()
+    lang_map = {}
+
+    queries = [clean_title, f"{clean_title} Hindi", f"{clean_title} English"]
+    for q in queries:
+        try:
+            search_client = Search(session=session, query=q)
+            res = await search_client.get_content_model()
+            if not res or not res.items:
+                continue
+            for it in res.items:
+                if it.subjectId in seen_subjects:
+                    continue
+                seen_subjects.add(it.subjectId)
+
+                it_is_series = it.subjectType == SubjectType.TV_SERIES or int(getattr(it, "subjectType", 1)) == 2
+                if is_series != it_is_series:
+                    continue
+
+                it_clean = re.sub(r'\[.*?\]', '', it.title).strip()
+                it_clean = re.sub(r'\s+S\d+(-S\d+)?', '', it_clean, flags=re.IGNORECASE).strip()
+                sim = difflib.SequenceMatcher(None, clean_title.lower(), it_clean.lower()).ratio()
+                if sim < 0.70 and clean_title.lower() not in it_clean.lower() and it_clean.lower() not in clean_title.lower():
+                    continue
+
+                t_lower = it.title.lower()
+                c_lower = getattr(it, "countryName", "").lower()
+
+                if "hindi" in t_lower:
+                    code, name = "hi", "Hindi"
+                elif "english" in t_lower:
+                    code, name = "en", "English"
+                elif "japanese" in t_lower or ("japan" in c_lower and "hindi" not in t_lower):
+                    code, name = "ja", "Japanese"
+                elif "korean" in t_lower or ("korea" in c_lower and "hindi" not in t_lower):
+                    code, name = "ko", "Korean"
+                elif "spanish" in t_lower or ("spain" in c_lower and "hindi" not in t_lower):
+                    code, name = "es", "Spanish"
+                elif "russian" in t_lower or ("russia" in c_lower):
+                    code, name = "ru", "Russian"
+                elif "tamil" in t_lower:
+                    code, name = "ta", "Tamil"
+                elif "telugu" in t_lower:
+                    code, name = "te", "Telugu"
+                elif any(w in c_lower for w in ["united states", "united kingdom", "canada", "australia"]):
+                    code, name = "en", "English"
+                else:
+                    code, name = "orig", "Original"
+
+                if code not in lang_map:
+                    lang_map[code] = {
+                        "code": code,
+                        "name": name,
+                        "item": it,
+                        "title": it.title
+                    }
+        except Exception as e:
+            print(f"[VOD Scraper] Lang detection error for query '{q}': {e}")
+
+    order = ["hi", "en", "ja", "ko", "es", "ru", "ta", "te", "orig"]
+    sorted_langs = [lang_map[o] for o in order if o in lang_map]
+    for c, info in lang_map.items():
+        if info not in sorted_langs:
+            sorted_langs.append(info)
+
+    return sorted_langs
