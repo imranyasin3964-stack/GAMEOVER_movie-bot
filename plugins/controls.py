@@ -97,8 +97,8 @@ def get_options_menu_buttons(chat_id: int, is_series: bool = False) -> InlineKey
     # Row 1: Quick Movie Jumps (4 equal-width buttons)
     jump_m10 = InlineKeyboardButton("- 10s", callback_data=f"opt_seek_{chat_id}_-10", style="primary")
     jump_p10 = InlineKeyboardButton("+ 10s", callback_data=f"opt_seek_{chat_id}_10", style="primary")
-    jump_m3m = InlineKeyboardButton("- 3ᴍ", callback_data=f"opt_seek_{chat_id}_-180", style="primary")
-    jump_p3m = InlineKeyboardButton("+ 3ᴍ", callback_data=f"opt_seek_{chat_id}_180", style="primary")
+    jump_m3m = InlineKeyboardButton("- 3m", callback_data=f"opt_seek_{chat_id}_-180", style="primary")
+    jump_p3m = InlineKeyboardButton("+ 3m", callback_data=f"opt_seek_{chat_id}_180", style="primary")
     row_jumps = [jump_m10, jump_p10, jump_m3m, jump_p3m]
 
     # Row 2: Series Navigator or Movie Restart

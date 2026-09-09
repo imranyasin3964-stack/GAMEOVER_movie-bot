@@ -162,16 +162,35 @@ class FixedStreamFilesDetail(StreamFilesDetail):
 import difflib
 
 
-async def search_vod(query: str, language: str = "en"):
+def normalize_search_query(q: str) -> str:
+    """Normalizes compound names and common movie variations (e.g. spiderman -> spider-man)."""
+    q_norm = re.sub(r'\bspiderman\b', 'spider-man', q, flags=re.IGNORECASE)
+    q_norm = re.sub(r'\bspider\s+man\b', 'spider-man', q_norm, flags=re.IGNORECASE)
+    q_norm = re.sub(r'\bironman\b', 'iron man', q_norm, flags=re.IGNORECASE)
+    q_norm = re.sub(r'\bantman\b', 'ant-man', q_norm, flags=re.IGNORECASE)
+    q_norm = re.sub(r'\bxmen\b', 'x-men', q_norm, flags=re.IGNORECASE)
+    return q_norm
+
+
+def extract_sequel_numbers(title: str) -> set:
+    """Extract standalone digits and Roman numerals representing sequel/part numbers."""
+    clean = re.sub(r'\[.*?\]', '', title).lower()
+    clean = re.sub(r'\b(?:season|s|ep|episode)\s*\d+\b', '', clean)
+    nums = set(re.findall(r'\b(?:\d+|ii|iii|iv|v|vi|vii|viii|ix|x)\b', clean))
+    return nums
+
+
+async def search_vod(query: str, language: str = "hi"):
     """
     Search MovieBox for a query and return ranked list of SearchResultsItem objects.
-    Uses fuzzy matching and score ranking so titles like 'The Witcher' or 'witcer'
-    always resolve cleanly without false negatives.
+    Defaults to Hindi preference (language="hi").
+    Uses normalized alias expansion, stem title querying, sequel conflict checks, and fuzzy score ranking.
     """
     session = Session()
     
+    norm_query = normalize_search_query(query)
     # Clean query for search endpoint (strip season/ep markers)
-    clean_query = re.sub(r'\s+S\d+(-S\d+)?\b', '', query, flags=re.IGNORECASE)
+    clean_query = re.sub(r'\s+S\d+(-S\d+)?\b', '', norm_query, flags=re.IGNORECASE)
     clean_query = re.sub(r'\s+Season\s+\d+\b', '', clean_query, flags=re.IGNORECASE)
     clean_query = re.sub(r'\s+Ep?\s*\d+\b', '', clean_query, flags=re.IGNORECASE)
     clean_query = clean_query.strip()
@@ -181,22 +200,42 @@ async def search_vod(query: str, language: str = "en"):
     base_title = re.sub(r'\s+', ' ', base_title).strip()
     if not base_title:
         base_title = clean_query
-    
+
+    # Also extract stem title without sequel digits (e.g. 'spider-man' from 'spider-man 2')
+    stem_title = re.sub(r'\b(?:\d+|ii|iii|iv|v|vi|vii|viii|ix|x)\b', '', base_title, flags=re.IGNORECASE).strip()
+    stem_title = re.sub(r'\s+', ' ', stem_title).strip()
+
     seen_ids = set()
     raw_items = []
 
-    # 1. Search queries based on intent
+    # 1. Multi-target queries based on intent
     queries_to_try = []
-    if is_hi:
-        queries_to_try.append(f"{base_title} Hindi")
-        queries_to_try.append(base_title)
-        if clean_query != base_title:
-            queries_to_try.append(clean_query)
-    else:
+    # Hindi targeted variations first
+    queries_to_try.append(f"{base_title} Hindi")
+    if stem_title and stem_title != base_title:
+        queries_to_try.append(f"{stem_title} Hindi")
+    # Base title variations
+    queries_to_try.append(base_title)
+    if stem_title and stem_title != base_title:
+        queries_to_try.append(stem_title)
+    # Hyphen/space alternatives (e.g. spider man 2 vs spider-man 2)
+    if "-" in base_title:
+        queries_to_try.append(f"{base_title.replace('-', ' ')} Hindi")
+        queries_to_try.append(base_title.replace('-', ' '))
+        queries_to_try.append(base_title.replace('-', ''))
+    if clean_query != base_title:
         queries_to_try.append(clean_query)
-        queries_to_try.append(f"{clean_query} Hindi")
 
+    # Deduplicate queries preserving order
+    seen_queries = set()
+    dedup_queries = []
     for q in queries_to_try:
+        q_str = q.strip()
+        if q_str and q_str.lower() not in seen_queries:
+            seen_queries.add(q_str.lower())
+            dedup_queries.append(q_str)
+
+    for q in dedup_queries:
         try:
             search_client = Search(session=session, query=q)
             results = await search_client.get_content_model()
@@ -225,7 +264,8 @@ async def search_vod(query: str, language: str = "en"):
     if not raw_items:
         return []
 
-    # 3. Fuzzy score ranking algorithm
+    # 3. Fuzzy score ranking algorithm with sequel conflict detection
+    q_nums = extract_sequel_numbers(base_title)
     query_lower = base_title.lower()
     query_words = [w for w in query_lower.split() if len(w) > 1]
 
@@ -233,31 +273,49 @@ async def search_vod(query: str, language: str = "en"):
         title_lower = item.title.lower()
         clean_title = re.sub(r'\[.*?\]', '', title_lower).replace("dubbed", "").strip()
         clean_title = re.sub(r'\s+s\d+(-s\d+)?', '', clean_title).strip()
-        
-        # Base ratio using difflib against base_title
-        score = difflib.SequenceMatcher(None, query_lower, clean_title).ratio()
-        
-        # Exact match boost
+
+        # Sequel number conflict check
+        c_nums = extract_sequel_numbers(clean_title)
+        if q_nums:
+            if not c_nums:
+                return -5.0  # Query asked for sequel number, candidate has none
+            if not q_nums.issubset(c_nums):
+                return -10.0  # Conflict (e.g. 2 vs 3)
+
+        # Disqualify items that share zero words and low similarity
+        matched_words = sum(1 for w in query_words if w in clean_title)
+        ratio = difflib.SequenceMatcher(None, query_lower, clean_title).ratio()
+        if not matched_words and ratio < 0.45 and (query_lower not in clean_title):
+            return -15.0
+
+        score = ratio
+
+        # Exact / Substring match boost
         if query_lower == clean_title:
-            score += 0.5
+            score += 1.0
         elif query_lower in clean_title:
-            score += 0.35
+            score += 0.5
 
         # Word overlap boost
-        matched_words = sum(1 for w in query_words if w in clean_title)
         if query_words:
-            score += (matched_words / len(query_words)) * 0.3
+            score += (matched_words / len(query_words)) * 0.4
 
-        # Hindi preference boost if requested
-        if is_hi and "hindi" in title_lower:
-            score += 0.6
+        # Exact sequel number match bonus
+        if q_nums and q_nums.issubset(c_nums):
+            score += 0.8
+
+        # Hindi preference boost
+        if is_hi and ("hindi" in title_lower or "hindi" in getattr(item, "countryName", "").lower()):
+            score += 1.2
         elif not is_hi and "hindi" not in title_lower:
-            score += 0.1
+            score += 0.2
 
         return score
 
-    raw_items.sort(key=rank_score, reverse=True)
-    return raw_items
+    # Filter out heavily penalized / disqualified items
+    ranked_items = [it for it in raw_items if rank_score(it) > -4.0]
+    ranked_items.sort(key=rank_score, reverse=True)
+    return ranked_items if ranked_items else raw_items
 
 
 async def search_hindi_version(session: Session, original_title: str):
@@ -319,9 +377,12 @@ async def search_english_version(session: Session, original_title: str):
 async def fetch_tv_details(session: Session, item: SearchResultsItem):
     """
     Fetch specific details (seasons, episodes) for a TV Series item.
+    Ensures seasons are sorted ascending (Season 1, Season 2, etc.).
     """
     tv_details_client = TVSeriesDetails(session=session)
     details = await tv_details_client.get_content_model(item)
+    if details and details.resource and details.resource.seasons:
+        details.resource.seasons.sort(key=lambda s: getattr(s, 'se', 0))
     return details
 
 
@@ -399,9 +460,11 @@ async def get_available_languages(session: Session, clean_title: str, is_series:
     """
     Search MovieBox for all available language dubs/releases of a title (Hindi, Japanese, English, Russian, etc.).
     Returns deduplicated list of available language items.
+    Prevents sequel number mismatches (e.g. Spider-Man 3 matching Spider-Man 2).
     """
     seen_subjects = set()
     lang_map = {}
+    clean_nums = extract_sequel_numbers(clean_title)
 
     queries = [clean_title, f"{clean_title} Hindi", f"{clean_title} English"]
     for q in queries:
@@ -421,6 +484,12 @@ async def get_available_languages(session: Session, clean_title: str, is_series:
 
                 it_clean = re.sub(r'\[.*?\]', '', it.title).strip()
                 it_clean = re.sub(r'\s+S\d+(-S\d+)?', '', it_clean, flags=re.IGNORECASE).strip()
+
+                # Sequel number conflict check
+                it_nums = extract_sequel_numbers(it_clean)
+                if clean_nums and (not it_nums or not clean_nums.issubset(it_nums)):
+                    continue
+
                 sim = difflib.SequenceMatcher(None, clean_title.lower(), it_clean.lower()).ratio()
                 if sim < 0.70 and clean_title.lower() not in it_clean.lower() and it_clean.lower() not in clean_title.lower():
                     continue

@@ -464,6 +464,158 @@ class PlayerManager:
             task.cancel()
             print(f"[Player] ✅ Idle timer cancelled for chat {chat_id}")
 
+    # ────────────────────────── Assistant & VC Verification ─────────────────
+
+    async def ensure_assistant_in_chat(self, chat_id: int, bot_client: Client = None) -> tuple[bool, str, dict]:
+        """
+        Verify that the assistant account is in the chat.
+        If not present, attempts:
+        1. bot.add_chat_members(chat_id, asst_id)
+        2. bot.create_chat_invite_link(chat_id) -> assistant.join_chat(invite)
+        3. assistant.join_chat(chat.username)
+        Returns (is_in_chat, error_message, info_dict)
+        """
+        if not self._assistant:
+            return False, "Assistant client not initialized.", {}
+
+        try:
+            asst_me = await self._assistant.get_me()
+        except Exception as e:
+            return False, f"Failed to get assistant info: {e}", {}
+
+        info = {
+            "id": asst_me.id,
+            "username": asst_me.username or "",
+            "name": asst_me.first_name or "Assistant"
+        }
+
+        # Check if already present in chat
+        try:
+            member = await self._assistant.get_chat_member(chat_id, "me")
+            if member and member.status not in (enums.ChatMemberStatus.BANNED, enums.ChatMemberStatus.LEFT):
+                return True, "", info
+        except Exception:
+            pass
+
+        # Not in chat: try auto-invite/auto-add
+        _bot = bot_client or self.app
+        joined = False
+
+        if _bot:
+            try:
+                await _bot.add_chat_members(chat_id, asst_me.id)
+                joined = True
+                print(f"[Player] Added assistant to chat {chat_id} via bot.add_chat_members")
+            except Exception as e:
+                print(f"[Player] bot.add_chat_members failed: {e}")
+
+        if not joined and _bot:
+            try:
+                invite = await _bot.create_chat_invite_link(chat_id)
+                if invite and invite.invite_link:
+                    await self._assistant.join_chat(invite.invite_link)
+                    joined = True
+                    print(f"[Player] Assistant joined chat {chat_id} via invite link")
+            except Exception as e:
+                print(f"[Player] Assistant join via invite link failed: {e}")
+
+        if not joined:
+            try:
+                chat = await self._assistant.get_chat(chat_id)
+                if chat and chat.username:
+                    await self._assistant.join_chat(chat.username)
+                    joined = True
+                    print(f"[Player] Assistant joined public chat @{chat.username}")
+            except Exception as e:
+                print(f"[Player] Assistant join via username failed: {e}")
+
+        # Final verification check
+        try:
+            member = await self._assistant.get_chat_member(chat_id, "me")
+            if member and member.status not in (enums.ChatMemberStatus.BANNED, enums.ChatMemberStatus.LEFT):
+                return True, "", info
+        except Exception:
+            pass
+
+        asst_tag = f"@{info['username']}" if info['username'] else f"<a href='tg://user?id={info['id']}'>{info['name']}</a>"
+        err_msg = (
+            f"<b>⚠️ Assɪsᴛᴀɴᴛ Nᴏᴛ Fᴏᴜɴᴅ Iɴ Gʀᴏᴜᴘ</b>\n\n"
+            f"Bot ka Assistant account ({asst_tag}) is group mein add nahi ho saka!\n\n"
+            f"‣ Kripya Assistant ko group mein manually <b>Add karein</b> aur <b>Admin (Manage Video Chat)</b> banayein!\n"
+            f"‣ Ya phir <b>Bot ko Group Admin</b> banayein taaki bot Assistant ko invite kar sake."
+        )
+        return False, err_msg, info
+
+    async def ensure_active_voice_chat(self, chat_id: int, bot_client: Client = None) -> tuple[bool, str]:
+        """
+        Verify that Voice/Video Chat is currently open in chat_id.
+        Attempts CreateGroupCall if not already started.
+        Returns (has_call, error_message)
+        """
+        from pyrogram import raw
+        import random
+
+        _bot = bot_client or self.app
+        client = self._assistant or _bot
+        if not client:
+            return True, ""
+
+        has_call = False
+        try:
+            peer = await client.resolve_peer(chat_id)
+            if isinstance(peer, (raw.types.InputPeerChannel, raw.types.InputChannel)):
+                full = await client.invoke(raw.functions.channels.GetFullChannel(channel=peer))
+                has_call = getattr(full.full_chat, "call", None) is not None
+            elif isinstance(peer, (raw.types.InputPeerChat, int)):
+                cid = peer.chat_id if hasattr(peer, "chat_id") else peer
+                full = await client.invoke(raw.functions.messages.GetFullChat(chat_id=cid))
+                has_call = getattr(full.full_chat, "call", None) is not None
+        except Exception as e:
+            print(f"[Player] Raw VC inspection note: {e}")
+            has_call = True  # Don't block if inspection is inconclusive
+
+        if not has_call:
+            print(f"[Player] Voice chat not detected in chat {chat_id}. Attempting auto-start...")
+            from pyrogram.raw.functions.phone import CreateGroupCall
+            try:
+                peer_as = await self._assistant.resolve_peer(chat_id)
+                await self._assistant.invoke(
+                    CreateGroupCall(
+                        peer=peer_as,
+                        random_id=random.randint(0, 0x7FFFFFFF)
+                    )
+                )
+                print(f"[Player] Assistant auto-started group call in {chat_id}")
+                await asyncio.sleep(1.5)
+                has_call = True
+            except Exception as e1:
+                print(f"[Player] Assistant auto-start call failed: {e1}")
+                if _bot:
+                    try:
+                        peer_bot = await _bot.resolve_peer(chat_id)
+                        await _bot.invoke(
+                            CreateGroupCall(
+                                peer=peer_bot,
+                                random_id=random.randint(0, 0x7FFFFFFF)
+                            )
+                        )
+                        print(f"[Player] Bot auto-started group call in {chat_id}")
+                        await asyncio.sleep(1.5)
+                        has_call = True
+                    except Exception as e2:
+                        print(f"[Player] Bot auto-start call failed: {e2}")
+
+        if not has_call:
+            err_msg = (
+                f"<b>🎙️ Vᴏɪᴄᴇ Cʜᴀᴛ Nᴏᴛ Aᴄᴛɪᴠᴇ</b>\n\n"
+                f"Group mein Voice / Video Chat (Live) start nahi hai!\n\n"
+                f"‣ Kripya group mein pehle <b>Video / Voice Chat start karein</b>!\n"
+                f"‣ Voice chat start hone ke baad <code>/movie</code> play karein."
+            )
+            return False, err_msg
+
+        return True, ""
+
     # ────────────────────────── Play ────────────────────────────────────────
 
     async def _delayed_play(self, chat_id: int, song: SongInfo, send_card: bool = True, delay: float = 1.0):
@@ -491,28 +643,47 @@ class PlayerManager:
                 self.paused_time.pop(chat_id, None)
                 self.menu_active[chat_id] = False
 
-            # Ensure assistant is in the group
-            try:
-                await self._assistant.get_chat_member(chat_id, "me")
-            except Exception:
-                print(f"[Player] 📥 Joining chat {chat_id}...")
-                _bot = bot_client or self.app
-                joined = False
-                if _bot:
-                    try:
-                        invite = await _bot.create_chat_invite_link(chat_id)
-                        await self._assistant.join_chat(invite.invite_link)
-                        joined = True
-                    except Exception:
-                        pass
-                if not joined:
-                    try:
-                        chat = await self._assistant.get_chat(chat_id)
-                        if chat.username:
-                            await self._assistant.join_chat(chat.username)
-                            joined = True
-                    except Exception:
-                        pass
+            # Check 1: Assistant in group check
+            ok_asst, asst_err, asst_info = await self.ensure_assistant_in_chat(chat_id, bot_client=bot_client)
+            if not ok_asst:
+                queue_manager.clear(chat_id)
+                if self.app:
+                    asst_user = asst_info.get("username", "")
+                    btns = []
+                    if asst_user:
+                        btns.append([InlineKeyboardButton("➕ Aᴅᴅ Assɪsᴛᴀɴᴛ", url=f"https://t.me/{asst_user}?startgroup=true", style="success")])
+                    btns.append([InlineKeyboardButton("Cʟᴏsᴇ", callback_data="vcplay_close", style="danger")])
+                    status_mid = self.active_message_id.pop(chat_id, None)
+                    if status_mid:
+                        try:
+                            await self.app.edit_message_text(chat_id, status_mid, asst_err, reply_markup=InlineKeyboardMarkup(btns))
+                        except Exception:
+                            pass
+                    else:
+                        try:
+                            await self.app.send_message(chat_id, asst_err, reply_markup=InlineKeyboardMarkup(btns))
+                        except Exception:
+                            pass
+                return False
+
+            # Check 2: Active Voice Chat check
+            ok_vc, vc_err = await self.ensure_active_voice_chat(chat_id, bot_client=bot_client)
+            if not ok_vc:
+                queue_manager.clear(chat_id)
+                if self.app:
+                    status_mid = self.active_message_id.pop(chat_id, None)
+                    close_markup = InlineKeyboardMarkup([[InlineKeyboardButton("Cʟᴏsᴇ", callback_data="vcplay_close", style="danger")]])
+                    if status_mid:
+                        try:
+                            await self.app.edit_message_text(chat_id, status_mid, vc_err, reply_markup=close_markup)
+                        except Exception:
+                            pass
+                    else:
+                        try:
+                            await self.app.send_message(chat_id, vc_err, reply_markup=close_markup)
+                        except Exception:
+                            pass
+                return False
 
             # Detect stream modes
             mode = "audio" if getattr(song, "quality", "") == "audio" else "video"

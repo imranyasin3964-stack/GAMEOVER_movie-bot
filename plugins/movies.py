@@ -124,7 +124,8 @@ def get_search_results_panel(session_data):
 async def get_season_panel(session_data):
     clean_title = session_data.get("title", "")
     allowed_uid = session_data.get("requester_id", 0)
-    seasons = session_data.get("seasons", [])
+    raw_seasons = session_data.get("seasons", [])
+    seasons = sorted(raw_seasons, key=lambda s: getattr(s, "se", 0))
     
     lang_name = session_data.get("chosen_lang_name")
     if not lang_name:
@@ -233,7 +234,7 @@ async def select_vod_item(chat_id: int, item: SearchResultsItem, status_msg, use
             from core.vod_scraper import fetch_tv_details
             details = await fetch_tv_details(session_data["session"], session_data["current_item"])
             if details and details.resource and details.resource.seasons:
-                session_data["seasons"] = details.resource.seasons
+                session_data["seasons"] = sorted(details.resource.seasons, key=lambda s: getattr(s, 'se', 0))
                 caption, keyboard = await get_season_panel(session_data)
                 await safe_edit(status_msg, caption, keyboard)
                 return
@@ -583,13 +584,16 @@ def register(app: Client):
 
         try:
             import re, difflib
+            from core.vod_scraper import normalize_search_query
+            
             is_hindi_query = bool(re.search(r'\b(hindi|dubbed|dub)\b', raw_query, re.IGNORECASE))
             base_query = re.sub(r'\b(hindi|dubbed|dub|eng|english)\b', '', raw_query, flags=re.IGNORECASE).strip()
             base_query = re.sub(r'\s+', ' ', base_query).strip()
             if not base_query:
                 base_query = raw_query
 
-            items = await search_vod(raw_query, language="hi" if is_hindi_query else "en")
+            # Always search with Hindi preference by default
+            items = await search_vod(raw_query, language="hi")
             if not items:
                 await safe_edit(
                     status_msg,
@@ -600,8 +604,7 @@ def register(app: Client):
                 return
 
             session = Session()
-            hindi_item = next((it for it in items if "hindi" in it.title.lower()), None)
-            top_item = hindi_item if (is_hindi_query and hindi_item) else items[0]
+            top_item = items[0]
             
             clean_title = re.sub(r'\[.*?\]', '', top_item.title).strip()
             clean_title = re.sub(r'\s+S\d+(-S\d+)?', '', clean_title, flags=re.IGNORECASE).strip()
@@ -627,13 +630,15 @@ def register(app: Client):
             is_series = top_item.subjectType == SubjectType.TV_SERIES or int(getattr(top_item, "subjectType", 1)) == 2
             top_clean = re.sub(r'\[.*?\]', '', top_item.title).strip()
             top_clean = re.sub(r'\s+S\d+(-S\d+)?', '', top_clean, flags=re.IGNORECASE).strip()
-            title_sim = difflib.SequenceMatcher(None, base_query.lower(), top_clean.lower()).ratio()
-            is_match = (base_query.lower() in top_clean.lower()) or (top_clean.lower() in base_query.lower()) or (title_sim >= 0.75)
+            
+            base_norm = normalize_search_query(base_query).replace("-", " ").strip().lower()
+            top_norm = normalize_search_query(top_clean).replace("-", " ").strip().lower()
+            is_exact_match = (base_norm == top_norm)
 
             should_auto_proceed = False
-            if is_hindi_query and ("hindi" in top_item.title.lower()) and is_match:
+            if len(items) == 1:
                 should_auto_proceed = True
-            elif len(items) == 1:
+            elif is_exact_match and ("hindi" in top_item.title.lower() or not any("hindi" in it.title.lower() for it in items)):
                 should_auto_proceed = True
 
             if should_auto_proceed:
@@ -1030,6 +1035,24 @@ async def trigger_movie_playback(msg_or_query, session_data: dict, season: int =
     # If force_seek is >= 0, we use it, otherwise use 0
     seek_offset = force_seek if force_seek >= 0 else 0
     session_data["force_seek"] = seek_offset
+
+    # ── Voice Chat & Assistant Pre-Flight Check Before Fetching Stream ──
+    from core.player import stream_manager
+    ok_asst, asst_err, asst_info = await stream_manager.ensure_assistant_in_chat(chat_id, bot_client=stream_manager.app)
+    if not ok_asst:
+        asst_user = asst_info.get("username", "")
+        btns = []
+        if asst_user:
+            btns.append([InlineKeyboardButton("➕ Aᴅᴅ Assɪsᴛᴀɴᴛ", url=f"https://t.me/{asst_user}?startgroup=true", style="success")])
+        btns.append([InlineKeyboardButton("Cʟᴏsᴇ", callback_data="vcplay_close", style="danger")])
+        await safe_edit(message, asst_err, reply_markup=InlineKeyboardMarkup(btns))
+        return
+
+    ok_vc, vc_err = await stream_manager.ensure_active_voice_chat(chat_id, bot_client=stream_manager.app)
+    if not ok_vc:
+        vc_markup = InlineKeyboardMarkup([[InlineKeyboardButton("Cʟᴏsᴇ", callback_data="vcplay_close", style="danger")]])
+        await safe_edit(message, vc_err, reply_markup=vc_markup)
+        return
 
     label = "Eᴘɪsᴏᴅᴇ" if is_series else "Mᴏᴠɪᴇ"
     await safe_edit(message, f"{HEADER}<b>Fᴇᴛᴄʜɪɴɢ {label}...</b>\n<i>Server se stream fetch ki ja rahi hai...</i>")
