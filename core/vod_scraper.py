@@ -171,41 +171,46 @@ async def search_vod(query: str, language: str = "en"):
     session = Session()
     
     # Clean query for search endpoint (strip season/ep markers)
-    clean_query = re.sub(r'\s+S\d+\b', '', query, flags=re.IGNORECASE)
+    clean_query = re.sub(r'\s+S\d+(-S\d+)?\b', '', query, flags=re.IGNORECASE)
     clean_query = re.sub(r'\s+Season\s+\d+\b', '', clean_query, flags=re.IGNORECASE)
     clean_query = re.sub(r'\s+Ep?\s*\d+\b', '', clean_query, flags=re.IGNORECASE)
     clean_query = clean_query.strip()
+
+    is_hi = (language == "hi") or bool(re.search(r'\b(hindi|dubbed|dub)\b', query, re.IGNORECASE))
+    base_title = re.sub(r'\b(hindi|dubbed|dub|eng|english)\b', '', clean_query, flags=re.IGNORECASE).strip()
+    base_title = re.sub(r'\s+', ' ', base_title).strip()
+    if not base_title:
+        base_title = clean_query
     
     seen_ids = set()
     raw_items = []
 
-    # 1. Search clean base query first (MovieBox index is title-first)
-    try:
-        search_client = Search(session=session, query=clean_query)
-        results = await search_client.get_content_model()
-        if results and results.items:
-            for item in results.items:
-                if item.subjectId not in seen_ids:
-                    seen_ids.add(item.subjectId)
-                    raw_items.append(item)
-    except Exception as err:
-        print(f"[VOD Scraper] Base search attempt failed: {err}")
+    # 1. Search queries based on intent
+    queries_to_try = []
+    if is_hi:
+        queries_to_try.append(f"{base_title} Hindi")
+        queries_to_try.append(base_title)
+        if clean_query != base_title:
+            queries_to_try.append(clean_query)
+    else:
+        queries_to_try.append(clean_query)
+        queries_to_try.append(f"{clean_query} Hindi")
 
-    # 2. Search query + " Hindi" for Hindi-specific releases
-    try:
-        search_client = Search(session=session, query=f"{clean_query} Hindi")
-        results = await search_client.get_content_model()
-        if results and results.items:
-            for item in results.items:
-                if item.subjectId not in seen_ids:
-                    seen_ids.add(item.subjectId)
-                    raw_items.append(item)
-    except Exception as err:
-        print(f"[VOD Scraper] Hindi search attempt failed: {err}")
+    for q in queries_to_try:
+        try:
+            search_client = Search(session=session, query=q)
+            results = await search_client.get_content_model()
+            if results and results.items:
+                for item in results.items:
+                    if item.subjectId not in seen_ids:
+                        seen_ids.add(item.subjectId)
+                        raw_items.append(item)
+        except Exception as err:
+            print(f"[VOD Scraper] Search attempt '{q}' failed: {err}")
 
-    # 3. If still no items, try toggling "The " prefix for fuzzy match
+    # 2. If still no items, try toggling "The " prefix for fuzzy match
     if not raw_items:
-        alt_query = clean_query[4:] if clean_query.lower().startswith("the ") else f"The {clean_query}"
+        alt_query = base_title[4:] if base_title.lower().startswith("the ") else f"The {base_title}"
         try:
             search_client = Search(session=session, query=alt_query)
             results = await search_client.get_content_model()
@@ -220,29 +225,34 @@ async def search_vod(query: str, language: str = "en"):
     if not raw_items:
         return []
 
-    # 4. Fuzzy score ranking algorithm
-    query_lower = clean_query.lower()
+    # 3. Fuzzy score ranking algorithm
+    query_lower = base_title.lower()
     query_words = [w for w in query_lower.split() if len(w) > 1]
 
     def rank_score(item: SearchResultsItem) -> float:
         title_lower = item.title.lower()
         clean_title = re.sub(r'\[.*?\]', '', title_lower).replace("dubbed", "").strip()
+        clean_title = re.sub(r'\s+s\d+(-s\d+)?', '', clean_title).strip()
         
-        # Base ratio using difflib
+        # Base ratio using difflib against base_title
         score = difflib.SequenceMatcher(None, query_lower, clean_title).ratio()
         
+        # Exact match boost
+        if query_lower == clean_title:
+            score += 0.5
+        elif query_lower in clean_title:
+            score += 0.35
+
         # Word overlap boost
         matched_words = sum(1 for w in query_words if w in clean_title)
         if query_words:
-            score += (matched_words / len(query_words)) * 0.4
-
-        # Exact substring match boost
-        if query_lower in clean_title:
-            score += 0.3
+            score += (matched_words / len(query_words)) * 0.3
 
         # Hindi preference boost if requested
-        if language == "hi" and "hindi" in title_lower:
-            score += 0.25
+        if is_hi and "hindi" in title_lower:
+            score += 0.6
+        elif not is_hi and "hindi" not in title_lower:
+            score += 0.1
 
         return score
 

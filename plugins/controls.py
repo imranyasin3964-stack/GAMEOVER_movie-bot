@@ -122,7 +122,7 @@ def get_options_menu_buttons(chat_id: int, is_series: bool = False) -> InlineKey
 def get_rich_caption(song, played_secs: int = 0) -> str:
     """Returns styled HTML playback card text with bold Small Caps labels."""
     is_vod = (getattr(song, "uploader", "") == "MOVIES Engine") or (song.duration == "VOD")
-    title_display = f"<code>{song.title}</code>" if is_vod else f"<a href='{song.webpage_url}'>{song.title}</a>"
+    title_display = f"<b>{song.title}</b>" if is_vod else f"<a href='{song.webpage_url}'><b>{song.title}</b></a>"
 
     return (
         f"{HEADER}"
@@ -154,7 +154,7 @@ def back_help_markup() -> InlineKeyboardMarkup:
 def _now_playing_card(song, label: str = "Now Playing", extra: str = "") -> str:
     lang_line = ""
     is_vod = (getattr(song, "uploader", "") == "MOVIES Engine") or (song.duration == "VOD")
-    title_display = f"<code>{song.title}</code>" if is_vod else f"<a href='{song.webpage_url}'>{song.title}</a>"
+    title_display = f"<b>{song.title}</b>" if is_vod else f"<a href='{song.webpage_url}'><b>{song.title}</b></a>"
     if getattr(song, "uploader", "") == "MOVIES Engine":
         lang_str = "Hindi" if "hindi" in song.title.lower() else "English"
         lang_line = f"‣ <b>Lᴀɴɢᴜᴀɢᴇ :</b> <code>{lang_str}</code>\n"

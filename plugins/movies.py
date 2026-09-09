@@ -63,27 +63,29 @@ async def safe_edit(message, text, reply_markup=None):
 
 def chunk_buttons(buttons, n):
     return [buttons[i:i + n] for i in range(0, len(buttons), n)]
-
-
 async def get_season_panel(session_data):
     title = session_data["title"]
     allowed_uid = session_data["requester_id"]
     seasons = session_data["seasons"]
+    is_hi = session_data.get("chosen_lang") == "hi" or ("hindi" in getattr(session_data.get("current_item"), "title", "").lower())
+    lang_tag = " [Hindi]" if is_hi else ""
+    display_title = f"{title}{lang_tag}"
     
     caption = (
         f"{HEADER}"
-        f"<b>{title}</b> ke kul <code>{len(seasons)} seasons</code> hain.\n\n"
-        "Watch karne ke liye <b>Season</b> select karein:"
+        f"‣ <b>Tɪᴛʟᴇ :</b> <b>{display_title}</b>\n"
+        f"‣ <b>Tᴏᴛᴀʟ Sᴇᴀsᴏɴs :</b> <code>{len(seasons)}</code>\n\n"
+        "Watch karne ke liye neeche se <b>Season</b> select karein:"
     )
     
     buttons = []
     for s in seasons:
-        style = "primary"
         buttons.append(
-            InlineKeyboardButton(f"Sᴇᴀsᴏɴ {s.se}", callback_data=f"VOD|season|{allowed_uid}|{s.se}", style=style)
+            InlineKeyboardButton(f"Sᴇᴀsᴏɴ {s.se}", callback_data=f"VOD|season|{allowed_uid}|{s.se}", style="primary")
         )
         
     rows = chunk_buttons(buttons, 3)
+    rows.append([InlineKeyboardButton("Cʟᴏsᴇ", callback_data="vcplay_close", style="danger")])
     return caption, InlineKeyboardMarkup(rows)
 
 
@@ -92,6 +94,9 @@ def get_episode_panel(session_data):
     allowed_uid = session_data["requester_id"]
     season_num = session_data["chosen_season"]
     seasons = session_data["seasons"]
+    is_hi = session_data.get("chosen_lang") == "hi" or ("hindi" in getattr(session_data.get("current_item"), "title", "").lower())
+    lang_tag = " [Hindi]" if is_hi else ""
+    display_title = f"{title}{lang_tag}"
     
     max_ep = 1
     for s in seasons:
@@ -101,8 +106,9 @@ def get_episode_panel(session_data):
             
     caption = (
         f"{HEADER}"
-        f"<b>{title} — Season {season_num}</b>\n\n"
-        "Watch karne ke liye <b>Episode</b> select karein:"
+        f"‣ <b>Tɪᴛʟᴇ :</b> <b>{display_title}</b>\n"
+        f"‣ <b>Sᴇᴀsᴏɴ :</b> <code>{season_num}</code> (Total Episodes: <code>{max_ep}</code>)\n\n"
+        "Watch karne ke liye neeche se <b>Episode</b> select karein:"
     )
     
     buttons = []
@@ -112,18 +118,24 @@ def get_episode_panel(session_data):
         )
         
     rows = chunk_buttons(buttons, 5)
-    rows.append([InlineKeyboardButton("Bᴀᴄᴋ Tᴏ Sᴇᴀsᴏɴs", callback_data=f"VOD|back_to_seasons|{allowed_uid}", style="danger")])
+    rows.append([
+        InlineKeyboardButton("◀ Bᴀᴄᴋ Tᴏ Sᴇᴀsᴏɴs", callback_data=f"VOD|back_to_seasons|{allowed_uid}", style="primary"),
+        InlineKeyboardButton("Cʟᴏsᴇ", callback_data="vcplay_close", style="danger")
+    ])
     return caption, InlineKeyboardMarkup(rows)
 
 
 async def select_vod_item(chat_id: int, item: SearchResultsItem, status_msg, user_id: int):
+    import re
     session_data = vod_sessions.get(chat_id)
     if not session_data:
         return
         
     session_data["current_item"] = item
     session_data["chosen_lang"] = "hi" if "hindi" in item.title.lower() else "en"
-    session_data["title"] = item.title.replace("[Hindi]", "").replace("[English]", "").replace("[english]","").replace("[Hindi]","").strip()
+    clean_title = re.sub(r'\[.*?\]', '', item.title).strip()
+    clean_title = re.sub(r'\s+S\d+(-S\d+)?', '', clean_title, flags=re.IGNORECASE).strip()
+    session_data["title"] = clean_title
         
     is_series = session_data["current_item"].subjectType == SubjectType.TV_SERIES or int(getattr(session_data["current_item"], "subjectType", 1)) == 2
     
@@ -134,21 +146,10 @@ async def select_vod_item(chat_id: int, item: SearchResultsItem, status_msg, use
             session_data["seasons"] = details.resource.seasons
             caption, keyboard = await get_season_panel(session_data)
             await safe_edit(status_msg, caption, keyboard)
-        else:
-            is_series = False
-            
-    if not is_series:
-        caption = (
-            f"{HEADER}"
-            f"‣ <b>Tɪᴛʟᴇ :</b> <code>{session_data['title']}</code>\n\n"
-            f"Movie watch karne ke liye neeche click karein:"
-        )
-        keyboard = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("Pʟᴀʏ Mᴏᴠɪᴇ", callback_data=f"VOD|play_movie|{user_id}", style="success")
-            ]
-        ])
-        await safe_edit(status_msg, caption, keyboard)
+            return
+
+    # Direct movie playback without redundant intermediate screen
+    await trigger_movie_playback(status_msg, session_data, season=0, episode=0)
 
 
 async def show_loading_animation(chat_id: int, base_text: str) -> tuple:
@@ -469,29 +470,39 @@ def register(app: Client):
             await send_styled(chat_id=chat_id, text=caption, markup=keyboard)
             return
 
-        query = " ".join(message.command[1:])
-        print(f"[MOVIES Engine] Search request: '{query}' by user {user_id}")
+        raw_query = " ".join(message.command[1:]).strip()
+        print(f"[MOVIES Engine] Search request: '{raw_query}' by user {user_id}")
 
         status_msg = await show_loading_animation(chat_id, "Searching")
 
         try:
-            items = await search_vod(query, language="hi")
+            import re, difflib
+            is_hindi_query = bool(re.search(r'\b(hindi|dubbed|dub)\b', raw_query, re.IGNORECASE))
+            base_query = re.sub(r'\b(hindi|dubbed|dub|eng|english)\b', '', raw_query, flags=re.IGNORECASE).strip()
+            base_query = re.sub(r'\s+', ' ', base_query).strip()
+            if not base_query:
+                base_query = raw_query
+
+            items = await search_vod(raw_query, language="hi" if is_hindi_query else "en")
             if not items:
                 await safe_edit(
                     status_msg,
                     f"{HEADER}"
-                    f"<b>Humein '{query}' ke naam se koi movie ya series nahi mili!</b>\n"
+                    f"<b>Humein '{raw_query}' ke naam se koi movie ya series nahi mili!</b>\n"
                     "Please spelling check karein aur dobara try karein."
                 )
                 return
 
             session = Session()
             hindi_item = next((it for it in items if "hindi" in it.title.lower()), None)
-            top_item = hindi_item if hindi_item else items[0]
-            clean_title = top_item.title.replace("[Hindi]", "").replace("[English]", "").replace("[english]","").replace("[Hindi]","").strip()
+            top_item = hindi_item if (is_hindi_query and hindi_item) else items[0]
+            
+            clean_title = re.sub(r'\[.*?\]', '', top_item.title).strip()
+            clean_title = re.sub(r'\s+S\d+(-S\d+)?', '', clean_title, flags=re.IGNORECASE).strip()
 
             vod_sessions[chat_id] = {
-                "query": query,
+                "query": raw_query,
+                "base_query": base_query,
                 "requester_id": user_id,
                 "requester_name": user.first_name if user and user.first_name else (f"@{user.username}" if user and user.username else str(user_id)),
                 "search_results": items,
@@ -505,31 +516,75 @@ def register(app: Client):
             }
             session_data = vod_sessions[chat_id]
 
-            # If top item is clearly the target or only 1 item returned, auto-proceed
-            if len(items) == 1 or query.lower() in top_item.title.lower():
-                is_series = top_item.subjectType == SubjectType.TV_SERIES or int(getattr(top_item, "subjectType", 1)) == 2
+            # Auto-proceed determination
+            is_series = top_item.subjectType == SubjectType.TV_SERIES or int(getattr(top_item, "subjectType", 1)) == 2
+            top_clean = re.sub(r'\[.*?\]', '', top_item.title).strip()
+            top_clean = re.sub(r'\s+S\d+(-S\d+)?', '', top_clean, flags=re.IGNORECASE).strip()
+            title_sim = difflib.SequenceMatcher(None, base_query.lower(), top_clean.lower()).ratio()
+            is_match = (base_query.lower() in top_clean.lower()) or (top_clean.lower() in base_query.lower()) or (title_sim >= 0.75)
+
+            should_auto_proceed = False
+            if is_hindi_query and ("hindi" in top_item.title.lower()) and is_match:
+                should_auto_proceed = True
+            elif len(items) == 1:
+                should_auto_proceed = True
+
+            if should_auto_proceed:
                 if is_series:
                     await select_vod_item(chat_id, top_item, status_msg, user_id)
                 else:
                     await trigger_movie_playback(status_msg, session_data, season=0, episode=0)
                 return
 
-            # Multiple search results — render interactive selection panel
-            caption = (
-                f"{HEADER}"
-                f"<b>Sᴇᴀʀᴄʜ Rᴇsᴜʟᴛs ғᴏʀ:</b> <code>{query}</code>\n\n"
-                f"Neeche se apni preferred movie ya series select karein:"
-            )
+            # Multiple search results — render clean mobile-optimized selection panel
+            caption_lines = [
+                HEADER.strip(),
+                "",
+                f"‣ <b>Sᴇᴀʀᴄʜ Rᴇsᴜʟᴛs :</b> <code>{base_query}</code>",
+                "<i>Neeche diye gaye number par click karke select karein:</i>",
+                ""
+            ]
+
             buttons = []
-            for itm in items[:6]:
+            for idx, itm in enumerate(items[:6], 1):
                 is_ser = itm.subjectType == SubjectType.TV_SERIES or int(getattr(itm, "subjectType", 1)) == 2
-                type_label = "[Series]" if is_ser else "[Movie]"
-                clean_item_t = itm.title.replace("[Hindi]", "").replace("[English]", "").replace("[english]","").replace("[Hindi]","").strip()
-                short_t = (clean_item_t[:30] + "...") if len(clean_item_t) > 30 else clean_item_t
+                type_name = "Series" if is_ser else "Movie"
+                
+                t_lower = itm.title.lower()
+                if "hindi" in t_lower:
+                    lang_badge = " <code>[HINDI]</code>"
+                    btn_lang = "[Hɪɴᴅɪ] "
+                elif "english" in t_lower:
+                    lang_badge = " <code>[ENG]</code>"
+                    btn_lang = "[Eɴɢ] "
+                else:
+                    lang_badge = ""
+                    btn_lang = f"[{'Sᴇʀɪᴇs' if is_ser else 'Mᴏᴠɪᴇ'}] "
+                
+                s_match = re.search(r'\bS\d+(-S\d+)?\b', itm.title, re.IGNORECASE)
+                season_str = f" ({s_match.group(0).upper()})" if s_match else ""
+
+                clean_name = re.sub(r'\[.*?\]', '', itm.title).strip()
+                clean_name = re.sub(r'\s+S\d+(-S\d+)?', '', clean_name, flags=re.IGNORECASE).strip()
+                
+                caption_lines.append(f"<b>{idx}.</b> {clean_name}{lang_badge}{season_str} • <i>{type_name}</i>")
+                
+                if len(clean_name) > 15:
+                    btn_short = clean_name[:14].strip() + "…"
+                else:
+                    btn_short = clean_name
+                
+                btn_label = f"{idx}. {btn_lang}{btn_short}"
                 buttons.append([
-                    InlineKeyboardButton(f"{type_label} {short_t}", callback_data=f"VOD|select|{user_id}|{itm.subjectId}", style="primary")
+                    InlineKeyboardButton(
+                        btn_label,
+                        callback_data=f"VOD|select|{user_id}|{itm.subjectId}",
+                        style="primary"
+                    )
                 ])
+
             buttons.append([InlineKeyboardButton("Cʟᴏsᴇ", callback_data="vcplay_close", style="danger")])
+            caption = "\n".join(caption_lines)
             await safe_edit(status_msg, caption, InlineKeyboardMarkup(buttons))
 
         except Exception as e:
@@ -854,9 +909,10 @@ async def trigger_movie_playback(msg_or_query, session_data: dict, season: int =
             
             allowed_uid = session_data.get("requester_id", 0)
             lang = session_data.get("chosen_lang", "en")
-            lang_tag = "[Hindi]" if lang == "hi" else ""
+            is_hi = (lang == "hi") or ("hindi" in getattr(current_item, "title", "").lower())
+            lang_tag = " [Hindi]" if is_hi else ""
             title_suffix = f" S{season}E{episode}" if season > 0 else ""
-            display_title = f"{session_data['title']}{title_suffix} {lang_tag}"
+            display_title = f"{session_data.get('title', '').strip()}{title_suffix}{lang_tag}".strip()
             
             caption = (
                 f"{HEADER}"
@@ -900,10 +956,11 @@ async def trigger_movie_playback(msg_or_query, session_data: dict, season: int =
             quality="720"
         )
         
-        lang = session_data["chosen_lang"]
-        lang_tag = "[Hindi]" if lang == "hi" else ""
+        lang = session_data.get("chosen_lang", "en")
+        is_hi = (lang == "hi") or ("hindi" in getattr(current_item, "title", "").lower())
+        lang_tag = " [Hindi]" if is_hi else ""
         title_suffix = f" S{season}E{episode}" if is_series else ""
-        display_title = f"{session_data['title']}{title_suffix} {lang_tag}"
+        display_title = f"{session_data.get('title', '').strip()}{title_suffix}{lang_tag}".strip()
         
         # Safely extract cover image URL
         thumb_url = ""
