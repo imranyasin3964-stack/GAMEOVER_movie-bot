@@ -21,8 +21,6 @@ if sys.stdout and hasattr(sys.stdout, "reconfigure"):
     except Exception:
         pass
 
-from contextlib import asynccontextmanager
-from pydantic import BaseModel, Field
 from fastapi import FastAPI, Query, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -48,59 +46,12 @@ init_db()
 shared_session = Session()
 items_cache: Dict[str, SearchResultsItem] = {}
 
-# Playwright Automation State (for SMS endpoints)
-playwright_instance = None
-browser_instance = None
-MAX_CONCURRENT_PAGES = 10
-sms_semaphore = asyncio.Semaphore(MAX_CONCURRENT_PAGES)
-SMS_TARGET_URL = "https://cyan-charline-96.tiiny.site/"
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    global playwright_instance, browser_instance
-    try:
-        from playwright.async_api import async_playwright
-        print("[INIT] Launching Headless Chromium for SMS Automation...")
-        playwright_instance = await async_playwright().start()
-        browser_instance = await playwright_instance.chromium.launch(
-            headless=True,
-            args=[
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-gpu",
-                "--no-first-run",
-                "--no-zygote",
-            ],
-        )
-        print("[INIT] Headless Browser ready for SMS requests.")
-    except Exception as e:
-        print(f"[INFO] Playwright not pre-launched on startup: {e}")
-
-    yield
-
-    print("[SHUTDOWN] Closing browser instances...")
-    if browser_instance:
-        try:
-            await browser_instance.close()
-        except Exception:
-            pass
-    if playwright_instance:
-        try:
-            await playwright_instance.stop()
-        except Exception:
-            pass
-    print("[SHUTDOWN] Shutdown complete.")
-
-
 app = FastAPI(
-    title="GameOver Cloud Cinema & Automation API",
-    description="Public High-Performance VOD, Anime Streaming & SMS Automation REST API.",
-    version="1.1.0",
+    title="GameOver Cloud Cinema & Anime API",
+    description="Public High-Performance VOD & Streaming REST API. Provides clean JSON search, details with full episode lists, and dynamic direct stream links.",
+    version="1.0.0",
     docs_url="/docs",
-    redoc_url="/redoc",
-    lifespan=lifespan
+    redoc_url="/redoc"
 )
 
 # Enable CORS for all frontends/apps
@@ -513,171 +464,8 @@ async def api_languages(
         )
 
 
-# ═══════════════════════════════════════════════════════════
-# 🚀 SMS AUTOMATION & BOMBER ENDPOINTS (/send & /bulk_send)
-# ═══════════════════════════════════════════════════════════
-
-async def ensure_browser():
-    """Ensure browser instance is initialized lazily if not started yet."""
-    global playwright_instance, browser_instance
-    if browser_instance is not None:
-        return browser_instance
-    try:
-        from playwright.async_api import async_playwright
-        if not playwright_instance:
-            playwright_instance = await async_playwright().start()
-        browser_instance = await playwright_instance.chromium.launch(
-            headless=True,
-            args=[
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-gpu",
-                "--no-first-run",
-                "--no-zygote",
-            ],
-        )
-        return browser_instance
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Playwright browser could not be launched. Ensure playwright is installed: {str(e)}"
-        )
-
-
-def clean_phone_number(raw_phone: str) -> str:
-    """Sanitize phone number to digits only."""
-    cleaned = re.sub(r"\D", "", raw_phone)
-    if not cleaned or len(cleaned) < 7:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid phone number: '{raw_phone}'. Must contain at least 7 digits.",
-        )
-    return cleaned
-
-
-async def execute_bombing_on_page(phone: str, count: int, wait_timeout: int = 35) -> dict:
-    """Automate the website interaction for a single phone number."""
-    import time
-    browser = await ensure_browser()
-    start_time = time.time()
-    clean_phone = clean_phone_number(phone)
-    safe_count = max(1, min(500, count))
-
-    async with sms_semaphore:
-        context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        )
-        page = await context.new_page()
-
-        try:
-            await page.goto(SMS_TARGET_URL, wait_until="domcontentloaded", timeout=20000)
-            await page.fill("#phoneNumber", clean_phone)
-            await page.fill("#smsCount", str(safe_count))
-            await page.click("#bombBtn")
-
-            final_message = ""
-            status_type = "completed"
-            deadline = time.time() + wait_timeout
-
-            while time.time() < deadline:
-                await asyncio.sleep(1)
-                try:
-                    status_text = await page.inner_text("#statusDisplay", timeout=2000)
-                    status_text_clean = status_text.strip()
-                except Exception:
-                    status_text_clean = ""
-
-                is_disabled = await page.is_disabled("#bombBtn")
-
-                if any(k in status_text_clean.lower() for k in ["successfully", "sent", "failed", "all ", "check your phone"]):
-                    final_message = status_text_clean
-                    status_type = "success" if "fail" not in status_text_clean.lower() else "partial_fail"
-                    break
-
-                if not is_disabled and time.time() - start_time > 3:
-                    final_message = status_text_clean or "Process finished."
-                    break
-
-            if not final_message:
-                final_message = "Bombing started and dispatched to background."
-
-            elapsed = round(time.time() - start_time, 2)
-            return {
-                "status": status_type,
-                "target": clean_phone,
-                "limit": safe_count,
-                "message": final_message,
-                "duration_seconds": elapsed,
-            }
-
-        except Exception as e:
-            elapsed = round(time.time() - start_time, 2)
-            return {
-                "status": "error",
-                "target": clean_phone,
-                "limit": safe_count,
-                "message": str(e),
-                "duration_seconds": elapsed,
-            }
-        finally:
-            await page.close()
-            await context.close()
-
-
-class BulkBombRequest(BaseModel):
-    numbers: List[str] = Field(..., description="List of target numbers")
-    limit: int = Field(default=10, ge=1, le=500, description="SMS count limit per number")
-
-
-@app.get("/send", tags=["SMS Automation"])
-async def send_sms(
-    num: str = Query(..., description="Target phone number (or comma-separated numbers, e.g. 923039642526)"),
-    limit: int = Query(default=10, ge=1, le=500, description="SMS limit / count (e.g. 250)"),
-    wait_timeout: int = Query(default=30, ge=5, le=120, description="Max seconds to wait for completion"),
-):
-    """
-    Main SMS Automation endpoint:
-    - /send?limit=250&num=923039642526
-    - /send?num=923039642526&limit=250
-    - Multi-numbers via comma: /send?limit=250&num=923001111111,923002222222
-    """
-    targets = [n.strip() for n in num.split(",") if n.strip()]
-    if not targets:
-        raise HTTPException(status_code=400, detail="No valid target phone number provided.")
-
-    if len(targets) == 1:
-        return await execute_bombing_on_page(targets[0], limit, wait_timeout)
-
-    tasks = [execute_bombing_on_page(target, limit, wait_timeout) for target in targets]
-    results = await asyncio.gather(*tasks)
-    return {
-        "total": len(targets),
-        "limit_per_target": limit,
-        "results": results,
-    }
-
-
-@app.post("/bulk_send", tags=["SMS Automation"])
-async def bulk_send_sms(payload: BulkBombRequest):
-    """
-    Bulk SMS endpoint for sending to multiple numbers concurrently via JSON POST.
-    """
-    if not payload.numbers:
-        raise HTTPException(status_code=400, detail="Number list cannot be empty.")
-
-    tasks = [execute_bombing_on_page(target, payload.limit) for target in payload.numbers]
-    results = await asyncio.gather(*tasks)
-    return {
-        "total_numbers": len(payload.numbers),
-        "limit_per_number": payload.limit,
-        "results": results,
-    }
-
-
-
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", 8000))
+    port = int(os.getenv("PORT", 5000))
     print(f"\n[+] Starting GameOver Cinema API on port {port}...")
     print(f"[+] Interactive Docs: http://localhost:{port}/docs\n")
     uvicorn.run("api:app", host="0.0.0.0", port=port, reload=False, workers=1)

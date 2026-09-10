@@ -11,7 +11,7 @@
  */
 
 // ⚙️ LINODE VPS HOSTNAME (sslip.io converts IP to valid DNS hostname so Cloudflare Error 1003 is bypassed)
-const BACKEND_ORIGIN = "http://172.104.38.31.sslip.io:8000";
+const BACKEND_ORIGIN = "http://172.104.38.31.sslip.io:5000";
 
 // CORS Headers so any website, app, or player can access the API
 const CORS_HEADERS = {
