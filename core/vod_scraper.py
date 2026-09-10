@@ -92,6 +92,8 @@ r_mod_v2.Session.get_with_cookies = patched_get_with_cookies_v2
 orig_init_v1 = r_mod_v1.Session.__init__
 orig_init_v2 = r_mod_v2.Session.__init__
 
+import httpx
+
 def patched_init_v1(self, *args, **kwargs):
     orig_init_v1(self, *args, **kwargs)
     from core.domain_manager import get_domain
@@ -100,6 +102,7 @@ def patched_init_v1(self, *args, **kwargs):
         "Origin": f"https://{domain}",
         "Referer": f"https://{domain}/"
     })
+    self._client.timeout = httpx.Timeout(20.0, connect=10.0)
 
 def patched_init_v2(self, *args, **kwargs):
     orig_init_v2(self, *args, **kwargs)
@@ -109,6 +112,7 @@ def patched_init_v2(self, *args, **kwargs):
         "Origin": f"https://{domain}",
         "Referer": f"https://{domain}/"
     })
+    self._client.timeout = httpx.Timeout(20.0, connect=10.0)
 
 r_mod_v1.Session.__init__ = patched_init_v1
 r_mod_v2.Session.__init__ = patched_init_v2

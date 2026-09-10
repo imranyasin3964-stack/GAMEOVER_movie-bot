@@ -97,17 +97,19 @@ class SearchResultsItem(SearchResultsItemV1):
     dubs: list[DubModel] | None = None
 
     @field_validator("ops", mode="before")
-    def validate_ops(value: str) -> dict:
+    def validate_ops(value) -> dict:
         if not value:
-            return
-
+            return None
+        if isinstance(value, dict):
+            return value
         return loads(value)
 
     @field_validator("subtitles", mode="before")
-    def validate_subtitles(value: str) -> list[str]:
+    def validate_subtitles(value) -> list[str]:
         if not value:
-            return
-
+            return None
+        if isinstance(value, list):
+            return value
         return value.split(",")
 
     @property

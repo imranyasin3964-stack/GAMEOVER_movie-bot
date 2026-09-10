@@ -11,3 +11,5 @@ psutil
 throttlebuster
 pydantic
 Pillow
+fastapi
+uvicorn

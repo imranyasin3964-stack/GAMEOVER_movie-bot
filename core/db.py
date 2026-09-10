@@ -116,7 +116,7 @@ def init_db():
             expires_at INTEGER DEFAULT 0
         )
     """)
-    
+
     # Check if columns exist in api_users (migration for existing database)
     cursor.execute("PRAGMA table_info(api_users)")
     columns = [col[1] for col in cursor.fetchall()]
@@ -199,11 +199,84 @@ def init_db():
         )
     """)
 
+    # Table for API Search Items cache
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS api_items (
+            subject_id TEXT PRIMARY KEY,
+            title TEXT,
+            data_json TEXT,
+            timestamp REAL
+        )
+    """)
+
     conn.commit()
     conn.close()
 
 # Initialize database tables
 init_db()
+
+
+# ─── API Items Helpers ──────────────────────────────────
+def save_api_item(item):
+    """Save a SearchResultsItem to SQLite for instant lookup by subjectId."""
+    if not item:
+        return
+    sub_id = str(getattr(item, "subjectId", "") or "")
+    if not sub_id and isinstance(item, dict):
+        sub_id = str(item.get("subjectId") or item.get("id") or "")
+    if not sub_id:
+        return
+    title = str(getattr(item, "title", "") or "")
+    if not title and isinstance(item, dict):
+        title = str(item.get("title") or "")
+
+    try:
+        if hasattr(item, "model_dump_json"):
+            item_json = item.model_dump_json()
+        elif hasattr(item, "json"):
+            item_json = item.json()
+        elif isinstance(item, dict):
+            item_json = json.dumps(item)
+        else:
+            item_json = json.dumps(getattr(item, "__dict__", {}))
+    except Exception:
+        item_json = ""
+
+    conn = get_db()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            INSERT OR REPLACE INTO api_items (subject_id, title, data_json, timestamp)
+            VALUES (?, ?, ?, ?)
+        """, (sub_id, title, item_json, time.time()))
+        conn.commit()
+    except Exception as e:
+        print(f"[DB] Error saving api_item {sub_id}: {e}")
+    finally:
+        conn.close()
+
+
+def get_api_item(subject_id: str):
+    """Retrieve a SearchResultsItem from SQLite by subjectId."""
+    if not subject_id:
+        return None
+    conn = get_db()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT data_json FROM api_items WHERE subject_id = ?", (str(subject_id).strip(),))
+        row = cursor.fetchone()
+        if row and row["data_json"]:
+            from moviebox_api.v2.models import SearchResultsItem
+            try:
+                return SearchResultsItem.model_validate_json(row["data_json"])
+            except Exception:
+                return SearchResultsItem.parse_raw(row["data_json"])
+        return None
+    except Exception as e:
+        print(f"[DB] Error loading api_item {subject_id}: {e}")
+        return None
+    finally:
+        conn.close()
 
 
 # ─── Settings Helpers ───────────────────────────────────

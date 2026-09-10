@@ -95,7 +95,11 @@ class ContentSubjectModel(BaseModel):
     # imdbRatingCount: int
 
     @field_validator("genre", mode="before")
-    def validate_genre(value: str) -> list[str]:
+    def validate_genre(value) -> list[str]:
+        if not value:
+            return []
+        if isinstance(value, list):
+            return value
         return value.split(",")
 
 
@@ -142,7 +146,11 @@ class ContentCategorySubjectsModel(ContentSubjectModel):
     hasResource: bool
 
     @field_validator("subtitles", mode="before")
-    def validate_subtitles(value: str) -> list[str]:
+    def validate_subtitles(value) -> list[str]:
+        if not value:
+            return []
+        if isinstance(value, list):
+            return value
         return value.split(",")
 
 
@@ -201,14 +209,19 @@ class SearchResultsItem(ContentSubjectModel):
     imdbRatingCount: int | None = None  # None for TrendingResults
 
     @field_validator("ops", mode="before")
-    def validate_ops(value: str) -> dict:
+    def validate_ops(value) -> dict:
         if not bool(value):
             return None
-
+        if isinstance(value, dict):
+            return value
         return loads(value)
 
     @field_validator("subtitles", mode="before")
-    def validate_subtitles(value: str) -> list[str]:
+    def validate_subtitles(value) -> list[str]:
+        if not value:
+            return []
+        if isinstance(value, list):
+            return value
         return value.split(",")
 
     @property
