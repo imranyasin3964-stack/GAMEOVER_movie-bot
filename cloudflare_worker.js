@@ -10,8 +10,8 @@
  * 6. (Optional) In Worker Settings -> Triggers -> Custom Domains, attach your domain (e.g. "api.yourdomain.com").
  */
 
-// ⚙️ REPLACE WITH YOUR AKAMAI / LINODE VPS IP AND PORT
-const BACKEND_ORIGIN = "http://YOUR_VPS_IP:8000";
+// ⚙️ LINODE VPS IP AND PORT
+const BACKEND_ORIGIN = "http://172.104.38.31:8000";
 
 // CORS Headers so any website, app, or player can access the API
 const CORS_HEADERS = {
