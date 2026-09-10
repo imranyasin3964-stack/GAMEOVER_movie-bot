@@ -10,8 +10,8 @@
  * 6. (Optional) In Worker Settings -> Triggers -> Custom Domains, attach your domain (e.g. "api.yourdomain.com").
  */
 
-// ⚙️ LINODE VPS IP AND PORT
-const BACKEND_ORIGIN = "http://172.104.38.31:8000";
+// ⚙️ LINODE VPS HOSTNAME (sslip.io converts IP to valid DNS hostname so Cloudflare Error 1003 is bypassed)
+const BACKEND_ORIGIN = "http://172.104.38.31.sslip.io:8000";
 
 // CORS Headers so any website, app, or player can access the API
 const CORS_HEADERS = {
@@ -38,6 +38,7 @@ export default {
     const newHeaders = new Headers(request.headers);
     newHeaders.set("X-Forwarded-Host", url.hostname);
     newHeaders.set("X-Real-IP", request.headers.get("cf-connecting-ip") || "");
+    newHeaders.set("Host", targetUrl.host);
 
     const fetchOptions = {
       method: request.method,

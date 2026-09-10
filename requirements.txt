@@ -13,3 +13,4 @@ pydantic
 Pillow
 fastapi
 uvicorn
+playwright
