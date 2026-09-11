@@ -307,8 +307,22 @@ async def start_handler(client: Client, message: Message):
                 print(f"[Start] Local video send failed: {e}")
             break
 
-    # Final fallback: text only
-    await message.reply_text(caption_text, parse_mode=enums.ParseMode.HTML, reply_markup=markup, disable_web_page_preview=True)
+    # Final fallback: text only — guaranteed to work
+    try:
+        await message.reply_text(
+            caption_text,
+            parse_mode=enums.ParseMode.HTML,
+            reply_markup=markup,
+            disable_web_page_preview=True
+        )
+    except Exception as e:
+        print(f"[Start] Even text reply failed: {e}")
+        # Last resort — no markup
+        try:
+            await message.reply_text(caption_text, parse_mode=enums.ParseMode.HTML)
+        except Exception:
+            pass
+
 
 
 # Group message auto-registration
@@ -342,6 +356,18 @@ async def main():
     await assistant.start()
     me = await assistant.get_me()
     print(f"[Assistant] Logged in as: {me.first_name} (@{me.username or 'no username'})")
+
+    # Set default quality to 1080p @ 60 FPS on every startup
+    try:
+        from core.db import get_setting, set_setting
+        if not get_setting("quality_pref"):
+            set_setting("quality_pref", "1080p")
+            print("[Bot] Quality default set: 1080p")
+        if not get_setting("fps_pref"):
+            set_setting("fps_pref", "60")
+            print("[Bot] FPS default set: 60")
+    except Exception as qs_err:
+        print(f"[Bot] Quality/FPS default setup error: {qs_err}")
 
     # Set Telegram native menu button commands
     try:

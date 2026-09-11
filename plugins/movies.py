@@ -211,6 +211,67 @@ def get_episode_panel(session_data):
     return caption, InlineKeyboardMarkup(rows)
 
 
+def get_language_panel(session_data: dict) -> tuple:
+    """
+    Render language selection panel with episode counts.
+    Same small-caps font, no emojis, clean button layout.
+    Format:
+      Bʟᴇᴀᴄʜ — Lᴀɴɢᴜᴀɢᴇ Sᴇʟᴇᴄᴛ Kᴀʀᴇɪɴ
+
+      Neeche se language select karein:
+      [ Hɪɴᴅɪ — 56 Eᴘ ]
+      [ Eɴɢʟɪsʜ — 300 Eᴘ ]
+      [ Jᴀᴘᴀɴᴇsᴇ — 80 Eᴘ ]
+    """
+    clean_title = session_data.get("title", "")
+    allowed_uid = session_data.get("requester_id", 0)
+    available_langs = session_data.get("available_langs", [])
+
+    caption = (
+        f"{HEADER}"
+        f"\u2023 <b>Tɪᴛʟᴇ :</b> <b>{clean_title}</b>\n\n"
+        f"<b>Lᴀɴɢᴜᴀɢᴇ Sᴇʟᴇᴄᴛ Kᴀʀᴇɪɴ</b>\n"
+        f"<i>Neeche se apni pasand ki language select karein. Har button mein episodes ki count bhi hai.</i>"
+    )
+
+    buttons = []
+    for lang_info in available_langs:
+        code = lang_info.get("code", "en")
+        name = lang_info.get("name", "Unknown")
+        ep_count = lang_info.get("ep_count", 0)
+        subject_id = getattr(lang_info.get("item"), "subjectId", "")
+
+        # Small caps name conversion
+        name_small = {
+            "Hindi": "Hɪɴᴅɪ",
+            "English": "Eɴɢʟɪsʜ",
+            "Japanese": "Jᴀᴘᴀɴᴇsᴇ",
+            "Korean": "Kᴏʀᴇᴀɴ",
+            "Spanish": "Sᴘᴀɴɪsʜ",
+            "Russian": "Rᴜssɪᴀɴ",
+            "Tamil": "Tᴀᴍɪʟ",
+            "Telugu": "Tᴇʟᴜɢᴜ",
+            "Original": "Oʀɪɢɪɴᴀʟ",
+        }.get(name, name.upper())
+
+        ep_str = f" — {ep_count} Eᴘ" if ep_count and ep_count > 0 else ""
+        btn_label = f"{name_small}{ep_str}"
+
+        # Hindi = success (green), others = primary (blue)
+        btn_style = "success" if code == "hi" else "primary"
+
+        buttons.append([
+            InlineKeyboardButton(
+                btn_label,
+                callback_data=f"VODLANG|{code}|{session_data.get('query', clean_title)}|{allowed_uid}",
+                style=btn_style
+            )
+        ])
+
+    buttons.append([InlineKeyboardButton("Cʟᴏsᴇ", callback_data="vcplay_close", style="danger")])
+    return caption, InlineKeyboardMarkup(buttons)
+
+
 async def select_vod_item(chat_id: int, item: SearchResultsItem, status_msg, user_id: int):
     session_data = vod_sessions.get(chat_id)
     if not session_data:
@@ -259,15 +320,32 @@ async def select_vod_item(chat_id: int, item: SearchResultsItem, status_msg, use
     await trigger_movie_playback(status_msg, session_data, season=0, episode=0)
 
 
-async def show_loading_animation(chat_id: int, base_text: str) -> tuple:
-    """Sends a fast loading message immediately without artificial lag."""
-    from bot import send_styled
-    msg_data = await send_styled(
-        chat_id=chat_id,
-        text=f"{HEADER}<b>{base_text}...</b>"
-    )
-    msg_id = msg_data.get("result", {}).get("message_id")
-    return (chat_id, msg_id)
+async def show_loading_animation(chat_id: int, base_text: str, client=None) -> tuple:
+    """Sends a fast loading message using pyrogram native client for instant response."""
+    try:
+        # Try pyrogram native first — fastest
+        from bot import bot as _bot_client
+        _client = client or _bot_client
+        sent = await _client.send_message(
+            chat_id=chat_id,
+            text=f"{HEADER}<b>{base_text}...</b>",
+            parse_mode="html",
+            disable_web_page_preview=True
+        )
+        return (chat_id, sent.id)
+    except Exception as e:
+        print(f"[show_loading_animation] pyrogram failed: {e}, trying aiohttp...")
+        try:
+            from bot import send_styled
+            msg_data = await send_styled(
+                chat_id=chat_id,
+                text=f"{HEADER}<b>{base_text}...</b>"
+            )
+            msg_id = msg_data.get("result", {}).get("message_id")
+            return (chat_id, msg_id)
+        except Exception as e2:
+            print(f"[show_loading_animation] aiohttp also failed: {e2}")
+            return (chat_id, None)
 
 
 
@@ -580,7 +658,7 @@ def register(app: Client):
         raw_query = " ".join(message.command[1:]).strip()
         print(f"[MOVIES Engine] Search request: '{raw_query}' by user {user_id}")
 
-        status_msg = await show_loading_animation(chat_id, "Searching")
+        status_msg = await show_loading_animation(chat_id, "Sᴇᴀʀᴄʜɪɴɢ", client=client)
 
         try:
             import re, difflib
@@ -604,10 +682,17 @@ def register(app: Client):
                 return
 
             session = Session()
-            top_item = items[0]
-            
+
+            # === HINDI PRIORITY FIX ===
+            # Hindi items pehle sort karo — agar Hindi available hai toh wahi top pe
+            hindi_items = [it for it in items if "hindi" in it.title.lower()]
+            non_hindi_items = [it for it in items if "hindi" not in it.title.lower()]
+            items_sorted = hindi_items + non_hindi_items
+            top_item = items_sorted[0]
+
             clean_title = re.sub(r'\[.*?\]', '', top_item.title).strip()
             clean_title = re.sub(r'\s+S\d+(-S\d+)?', '', clean_title, flags=re.IGNORECASE).strip()
+            clean_title = clean_title.title()
 
             vod_sessions[chat_id] = {
                 "chat_id": chat_id,
@@ -615,13 +700,14 @@ def register(app: Client):
                 "base_query": base_query,
                 "requester_id": user_id,
                 "requester_name": user.first_name if user and user.first_name else (f"@{user.username}" if user and user.username else str(user_id)),
-                "search_results": items,
+                "search_results": items_sorted,
                 "session": session,
                 "seasons": [],
                 "chosen_season": 1,
                 "chosen_episode": 1,
                 "current_item": top_item,
                 "chosen_lang": "hi" if "hindi" in top_item.title.lower() else "en",
+                "chosen_lang_name": "Hindi" if "hindi" in top_item.title.lower() else None,
                 "title": clean_title
             }
             session_data = vod_sessions[chat_id]
@@ -630,19 +716,39 @@ def register(app: Client):
             is_series = top_item.subjectType == SubjectType.TV_SERIES or int(getattr(top_item, "subjectType", 1)) == 2
             top_clean = re.sub(r'\[.*?\]', '', top_item.title).strip()
             top_clean = re.sub(r'\s+S\d+(-S\d+)?', '', top_clean, flags=re.IGNORECASE).strip()
-            
+
             base_norm = normalize_search_query(base_query).replace("-", " ").strip().lower()
             top_norm = normalize_search_query(top_clean).replace("-", " ").strip().lower()
             is_exact_match = (base_norm == top_norm)
 
+            # Auto-proceed: agar Hindi mila ya sirf ek result hai
             should_auto_proceed = False
-            if len(items) == 1:
+            if len(items_sorted) == 1:
                 should_auto_proceed = True
-            elif is_exact_match and ("hindi" in top_item.title.lower() or not any("hindi" in it.title.lower() for it in items)):
+            elif hindi_items and is_exact_match:
+                # Hindi version mila aur exact match — seedha chalo
+                should_auto_proceed = True
+            elif is_exact_match and not any("hindi" in it.title.lower() for it in items_sorted):
+                # Koi Hindi nahi — exact match pe proceed
                 should_auto_proceed = True
 
             if should_auto_proceed:
                 if is_series:
+                    # Series hai — language panel dikhao agar multiple langs available
+                    await safe_edit(
+                        status_msg,
+                        f"{HEADER}‣ <b>Tɪᴛʟᴇ :</b> <b>{clean_title}</b>\n\n<i>Lᴀɴɢᴜᴀɢᴇ ᴅᴇᴛᴇᴄᴛɪɴɢ, ᴘʟᴇᴀsᴇ ᴡᴀɪᴛ...</i>"
+                    )
+                    try:
+                        from core.vod_scraper import get_available_languages
+                        available_langs = await get_available_languages(session, clean_title, is_series=True)
+                        if available_langs and len(available_langs) > 1:
+                            session_data["available_langs"] = available_langs
+                            caption, keyboard = get_language_panel(session_data)
+                            await safe_edit(status_msg, caption, keyboard)
+                            return
+                    except Exception as lang_err:
+                        print(f"[MOVIES Engine] Lang detection err: {lang_err}")
                     await select_vod_item(chat_id, top_item, status_msg, user_id)
                 else:
                     await trigger_movie_playback(status_msg, session_data, season=0, episode=0)

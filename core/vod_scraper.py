@@ -538,4 +538,26 @@ async def get_available_languages(session: Session, clean_title: str, is_series:
         if info not in sorted_langs:
             sorted_langs.append(info)
 
+    # Fetch episode counts for each language variant (best-effort, don't block on failure)
+    for lang_info in sorted_langs:
+        try:
+            it = lang_info.get("item")
+            if not it:
+                continue
+            it_is_series = it.subjectType == SubjectType.TV_SERIES or int(getattr(it, "subjectType", 1)) == 2
+            if it_is_series:
+                ep_session = Session()
+                tv_details_client = TVSeriesDetails(session=ep_session)
+                details = await tv_details_client.get_content_model(it)
+                if details and details.resource and details.resource.seasons:
+                    total_eps = sum(getattr(s, "maxEp", 0) for s in details.resource.seasons)
+                    lang_info["ep_count"] = total_eps
+                else:
+                    lang_info["ep_count"] = 0
+            else:
+                lang_info["ep_count"] = 1  # Movie = 1
+        except Exception as ep_err:
+            print(f"[VOD Scraper] ep_count fetch error for {lang_info.get('name')}: {ep_err}")
+            lang_info.setdefault("ep_count", 0)
+
     return sorted_langs

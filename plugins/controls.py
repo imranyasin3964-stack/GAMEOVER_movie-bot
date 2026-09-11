@@ -132,30 +132,46 @@ def get_options_menu_buttons(chat_id: int, is_series: bool = False) -> InlineKey
 
 
 def get_language_menu_buttons(chat_id: int, available_langs: list, current_code: str) -> InlineKeyboardMarkup:
-    """Returns styled language panel with Green for active language and Blue for other available languages."""
+    """Returns styled language panel. Green = Hindi (preferred), Blue = others. Shows episode count."""
+    name_small_map = {
+        "Hindi": "Hɪɴᴅɪ",
+        "English": "Eɴɢʟɪsʜ",
+        "Japanese": "Jᴀᴘᴀɴᴇsᴇ",
+        "Korean": "Kᴏʀᴇᴀɴ",
+        "Spanish": "Sᴘᴀɴɪsʜ",
+        "Russian": "Rᴜssɪᴀɴ",
+        "Tamil": "Tᴀᴍɪʟ",
+        "Telugu": "Tᴇʟᴜɢᴜ",
+        "Original": "Oʀɪɢɪɴᴀʟ",
+    }
     buttons = []
     for l_info in available_langs:
         code = l_info["code"]
         name = l_info["name"]
+        ep_count = l_info.get("ep_count", 0)
         is_active = (code == current_code)
-        
+
+        name_sc = name_small_map.get(name, name.upper())
+        ep_str = f" — {ep_count} Eᴘ" if ep_count and ep_count > 0 else ""
+
         if is_active:
-            lbl = f"✓ {to_small_caps(name)}"
-            style = "success"  # Green
+            lbl = f"[{name_sc}{ep_str}]"
+            style = "success"  # Green — current/Hindi preferred
             cb = f"opt_currlang_{chat_id}"
         else:
-            lbl = to_small_caps(name)
+            lbl = f"{name_sc}{ep_str}"
             style = "primary"  # Blue
             cb = f"opt_setlang_{chat_id}_{code}"
-            
+
         buttons.append(InlineKeyboardButton(lbl, callback_data=cb, style=style))
 
-    rows = chunk_buttons(buttons, 2)
+    rows = chunk_buttons(buttons, 1)  # One per row — fits mobile screen
     rows.append([
-        InlineKeyboardButton("◀ Bᴀᴄᴋ", callback_data=f"play_options_{chat_id}", style="success"),
+        InlineKeyboardButton("Bᴀᴄᴋ", callback_data=f"play_options_{chat_id}", style="success"),
         InlineKeyboardButton("Cʟᴏsᴇ", callback_data=f"play_close_{chat_id}", style="danger")
     ])
     return InlineKeyboardMarkup(rows)
+
 
 
 def get_rich_caption(song, played_secs: int = 0) -> str:
