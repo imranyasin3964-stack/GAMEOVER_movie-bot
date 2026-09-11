@@ -42,7 +42,7 @@ ROYAL_HEADER = HEADER
 
 async def safe_edit(message, text, reply_markup=None):
     try:
-        from core.player import edit_styled_caption
+        from core.player import edit_styled_text
         if hasattr(message, "chat"):
             chat_id = message.chat.id
             message_id = message.id
@@ -54,7 +54,7 @@ async def safe_edit(message, text, reply_markup=None):
         else:
             return message
             
-        await edit_styled_caption(chat_id, message_id, text, reply_markup)
+        await edit_styled_text(chat_id, message_id, text, reply_markup)
         return message
     except Exception as e:
         print(f"[safe_edit] Error: {e}")
@@ -214,14 +214,17 @@ def get_episode_panel(session_data):
 def get_language_panel(session_data: dict) -> tuple:
     """
     Render language selection panel with episode counts.
-    Same small-caps font, no emojis, clean button layout.
+    Same small-caps font, no emojis, clean single-column button boxes.
     Format:
-      Bʟᴇᴀᴄʜ — Lᴀɴɢᴜᴀɢᴇ Sᴇʟᴇᴄᴛ Kᴀʀᴇɪɴ
+      ‣ Tɪᴛʟᴇ : Bleach
 
-      Neeche se language select karein:
-      [ Hɪɴᴅɪ — 56 Eᴘ ]
-      [ Eɴɢʟɪsʜ — 300 Eᴘ ]
-      [ Jᴀᴘᴀɴᴇsᴇ — 80 Eᴘ ]
+      Lᴀɴɢᴜᴀɢᴇ Sᴇʟᴇᴄᴛ Kᴀʀᴇɪɴ
+      Neeche se apni pasand ki language select karein:
+
+      [ Hɪɴᴅɪ — 56 Eᴘ ]   (Green)
+      [ Eɴɢʟɪsʜ — 300 Eᴘ ] (Blue)
+      [ Jᴀᴘᴀɴᴇsᴇ — 80 Eᴘ ] (Blue)
+      [ Cʟᴏsᴇ ]           (Red)
     """
     clean_title = session_data.get("title", "")
     allowed_uid = session_data.get("requester_id", 0)
@@ -229,9 +232,9 @@ def get_language_panel(session_data: dict) -> tuple:
 
     caption = (
         f"{HEADER}"
-        f"\u2023 <b>Tɪᴛʟᴇ :</b> <b>{clean_title}</b>\n\n"
+        f"‣ <b>Tɪᴛʟᴇ :</b> <b>{clean_title}</b>\n\n"
         f"<b>Lᴀɴɢᴜᴀɢᴇ Sᴇʟᴇᴄᴛ Kᴀʀᴇɪɴ</b>\n"
-        f"<i>Neeche se apni pasand ki language select karein. Har button mein episodes ki count bhi hai.</i>"
+        f"<i>Neeche se apni pasand ki language select karein:</i>"
     )
 
     buttons = []
@@ -241,7 +244,6 @@ def get_language_panel(session_data: dict) -> tuple:
         ep_count = lang_info.get("ep_count", 0)
         subject_id = getattr(lang_info.get("item"), "subjectId", "")
 
-        # Small caps name conversion
         name_small = {
             "Hindi": "Hɪɴᴅɪ",
             "English": "Eɴɢʟɪsʜ",
@@ -256,14 +258,12 @@ def get_language_panel(session_data: dict) -> tuple:
 
         ep_str = f" — {ep_count} Eᴘ" if ep_count and ep_count > 0 else ""
         btn_label = f"{name_small}{ep_str}"
-
-        # Hindi = success (green), others = primary (blue)
         btn_style = "success" if code == "hi" else "primary"
 
         buttons.append([
             InlineKeyboardButton(
                 btn_label,
-                callback_data=f"VODLANG|{code}|{session_data.get('query', clean_title)}|{allowed_uid}",
+                callback_data=f"VODLANG|{code}|{subject_id}|{allowed_uid}",
                 style=btn_style
             )
         ])
@@ -286,7 +286,29 @@ async def select_vod_item(chat_id: int, item: SearchResultsItem, status_msg, use
         
     is_series = session_data["current_item"].subjectType == SubjectType.TV_SERIES or int(getattr(session_data["current_item"], "subjectType", 1)) == 2
     
+    # Check if multiple languages are available for this series
+    if not session_data.get("available_langs"):
+        try:
+            from core.vod_scraper import get_available_languages
+            available_langs = await get_available_languages(session_data["session"], clean_title, is_series=is_series)
+            if available_langs and len(available_langs) > 1:
+                session_data["available_langs"] = available_langs
+                caption, keyboard = get_language_panel(session_data)
+                await safe_edit(status_msg, caption, keyboard)
+                return
+            elif available_langs and len(available_langs) == 1:
+                session_data["available_langs"] = available_langs
+                if available_langs[0].get("seasons"):
+                    session_data["seasons"] = available_langs[0]["seasons"]
+        except Exception as e:
+            print(f"[MOVIES Engine] select_vod_item lang detect note: {e}")
+
     if is_series:
+        if session_data.get("seasons"):
+            caption, keyboard = await get_season_panel(session_data)
+            await safe_edit(status_msg, caption, keyboard)
+            return
+
         await safe_edit(
             status_msg,
             f"{HEADER}‣ <b>Tɪᴛʟᴇ :</b> <b>{clean_title}</b>\n\n<i>Lᴏᴀᴅɪɴɢ Sᴇᴀsᴏɴs, ᴘʟᴇᴀsᴇ ᴡᴀɪᴛ...</i>"
@@ -719,37 +741,36 @@ def register(app: Client):
 
             base_norm = normalize_search_query(base_query).replace("-", " ").strip().lower()
             top_norm = normalize_search_query(top_clean).replace("-", " ").strip().lower()
-            is_exact_match = (base_norm == top_norm)
 
-            # Auto-proceed: agar Hindi mila ya sirf ek result hai
-            should_auto_proceed = False
-            if len(items_sorted) == 1:
-                should_auto_proceed = True
-            elif hindi_items and is_exact_match:
-                # Hindi version mila aur exact match — seedha chalo
-                should_auto_proceed = True
-            elif is_exact_match and not any("hindi" in it.title.lower() for it in items_sorted):
-                # Koi Hindi nahi — exact match pe proceed
-                should_auto_proceed = True
+            sim_score = difflib.SequenceMatcher(None, base_norm, top_norm).ratio()
+            is_match = (base_norm == top_norm) or (base_norm in top_norm) or (top_norm in base_norm) or (sim_score >= 0.55)
+
+            # Auto-proceed: agar match mila ya sirf ek result hai
+            should_auto_proceed = (len(items_sorted) == 1) or is_match
 
             if should_auto_proceed:
+                # Detect all available languages in parallel
+                try:
+                    from core.vod_scraper import get_available_languages
+                    available_langs = await get_available_languages(session, clean_title, is_series=is_series)
+                    if available_langs and len(available_langs) > 1:
+                        session_data["available_langs"] = available_langs
+                        caption, keyboard = get_language_panel(session_data)
+                        await safe_edit(status_msg, caption, keyboard)
+                        return
+                    elif available_langs and len(available_langs) == 1:
+                        session_data["available_langs"] = available_langs
+                        first_l = available_langs[0]
+                        session_data["current_item"] = first_l["item"]
+                        session_data["chosen_lang"] = first_l["code"]
+                        session_data["chosen_lang_name"] = first_l["name"]
+                        if first_l.get("seasons"):
+                            session_data["seasons"] = first_l["seasons"]
+                except Exception as lang_err:
+                    print(f"[MOVIES Engine] Lang detection err: {lang_err}")
+
                 if is_series:
-                    # Series hai — language panel dikhao agar multiple langs available
-                    await safe_edit(
-                        status_msg,
-                        f"{HEADER}‣ <b>Tɪᴛʟᴇ :</b> <b>{clean_title}</b>\n\n<i>Lᴀɴɢᴜᴀɢᴇ ᴅᴇᴛᴇᴄᴛɪɴɢ, ᴘʟᴇᴀsᴇ ᴡᴀɪᴛ...</i>"
-                    )
-                    try:
-                        from core.vod_scraper import get_available_languages
-                        available_langs = await get_available_languages(session, clean_title, is_series=True)
-                        if available_langs and len(available_langs) > 1:
-                            session_data["available_langs"] = available_langs
-                            caption, keyboard = get_language_panel(session_data)
-                            await safe_edit(status_msg, caption, keyboard)
-                            return
-                    except Exception as lang_err:
-                        print(f"[MOVIES Engine] Lang detection err: {lang_err}")
-                    await select_vod_item(chat_id, top_item, status_msg, user_id)
+                    await select_vod_item(chat_id, session_data["current_item"], status_msg, user_id)
                 else:
                     await trigger_movie_playback(status_msg, session_data, season=0, episode=0)
                 return
@@ -803,14 +824,14 @@ def register(app: Client):
         
         try:
             await query.answer()
-        except:
+        except Exception:
             pass
             
         if len(parts) < 4:
             return
             
         lang = parts[1]
-        movie_query = parts[2]
+        target_subject_id = str(parts[2])
         allowed_uid = int(parts[3])
         
         requester_id = query.from_user.id if query.from_user else 0
@@ -818,39 +839,50 @@ def register(app: Client):
             await query.answer("Sirf wahi click kar sakta hai jisne search start kiya tha!", show_alert=True)
             return
             
-        await safe_edit(query.message, f"{HEADER}<b>Searching for {lang.upper()} version...</b>\n<i>Please wait...</i>")
-        
-        try:
-            items = await search_vod(movie_query, language=lang)
-            if not items:
-                await safe_edit(query.message, f"{HEADER}<b>Humein is query ka koi {lang.upper()} version nahi mila!</b>")
-                return
-                
-            session = Session()
-            vod_sessions[chat_id] = {
-                "query": movie_query,
-                "requester_id": allowed_uid,
-                "requester_name": query.from_user.first_name if query.from_user and query.from_user.first_name else str(allowed_uid),
-                "search_results": items,
-                "session": session,
-                "seasons": [],
-                "chosen_season": 1,
-                "chosen_episode": 1,
-                "current_item": items[0],
-                "chosen_lang": lang,
-                "title": items[0].title.replace("[Hindi]", "").replace("[English]", "").replace("[english]","").replace("[Hindi]","").strip()
-            }
-            session_data = vod_sessions[chat_id]
-            current_item = items[0]
-            is_series = current_item.subjectType == SubjectType.TV_SERIES or int(getattr(current_item, "subjectType", 1)) == 2
-            
+        session_data = vod_sessions.get(chat_id)
+        if not session_data:
+            await safe_edit(query.message, f"{HEADER}<b>Session expired. Please search again with /movie.</b>")
+            return
+
+        available_langs = session_data.get("available_langs", [])
+        matched_lang = next((l for l in available_langs if str(getattr(l.get("item"), "subjectId", "")) == target_subject_id or l.get("code") == lang), None)
+
+        if matched_lang and matched_lang.get("item"):
+            item = matched_lang["item"]
+            session_data["current_item"] = item
+            session_data["chosen_lang"] = lang
+            session_data["chosen_lang_name"] = matched_lang.get("name", lang.upper())
+
+            clean_title = re.sub(r'\[.*?\]', '', item.title).strip()
+            clean_title = re.sub(r'\s+S\d+(-S\d+)?', '', clean_title, flags=re.IGNORECASE).strip()
+            clean_title = clean_title.title()
+            session_data["title"] = clean_title
+
+            # Use pre-fetched seasons if available for instant load
+            cached_seasons = matched_lang.get("seasons", [])
+            if cached_seasons:
+                session_data["seasons"] = cached_seasons
+
+            is_series = item.subjectType == SubjectType.TV_SERIES or int(getattr(item, "subjectType", 1)) == 2
             if is_series:
-                await select_vod_item(chat_id, current_item, query.message, allowed_uid)
+                if session_data.get("seasons"):
+                    caption, keyboard = await get_season_panel(session_data)
+                    await safe_edit(query.message, caption, keyboard)
+                else:
+                    await select_vod_item(chat_id, item, query.message, allowed_uid)
             else:
                 await trigger_movie_playback(query, session_data, season=0, episode=0)
+            return
+
+        # Fallback if not found in pre-fetched list
+        try:
+            items = await search_vod(session_data.get("query", ""), language=lang)
+            if items:
+                await select_vod_item(chat_id, items[0], query.message, allowed_uid)
+            else:
+                await safe_edit(query.message, f"{HEADER}<b>Humein is version ka data nahi mila.</b>")
         except Exception as e:
-            print(f"[MOVIES Engine] Callback lang error: {e}")
-            await safe_edit(query.message, f"{HEADER}<b>Error:</b> <code>{str(e)}</code>")
+            print(f"[MOVIES Engine] Callback lang fallback error: {e}")
 
     @app.on_callback_query(filters.regex(r"^VOD\|"))
     async def vod_callback(client: Client, query: CallbackQuery):

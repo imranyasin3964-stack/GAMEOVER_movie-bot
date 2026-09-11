@@ -396,7 +396,7 @@ async def resolve_stream_link(session: Session, item: SearchResultsItem, season:
     """
     from core.db import get_setting
     if not quality:
-        q_setting = get_setting("quality_pref") or "1080p"
+        q_setting = get_setting("quality_pref") or "720p"
         res_map = {
             "4K": "2160",
             "2K": "1440",
@@ -404,7 +404,7 @@ async def resolve_stream_link(session: Session, item: SearchResultsItem, season:
             "720p": "720",
             "480p": "480"
         }
-        quality = res_map.get(q_setting, "1080")
+        quality = res_map.get(q_setting, "720")
 
     cache_key = f"{item.subjectId}|{season}|{episode}|{quality}"
     from core.db import get_cached_vod, set_cached_vod
@@ -434,7 +434,7 @@ async def resolve_stream_link(session: Session, item: SearchResultsItem, season:
                     stream_info.streams,
                     key=lambda s: int(s.resolutions) if str(s.resolutions).isdigit() else 0
                 )
-                req_val = int(quality) if quality.isdigit() else 1080
+                req_val = int(quality) if quality.isdigit() else 720
                 for s in reversed(streams_sorted):
                     val = int(s.resolutions) if str(s.resolutions).isdigit() else 0
                     if val <= req_val:
@@ -462,75 +462,85 @@ async def resolve_stream_link(session: Session, item: SearchResultsItem, season:
 
 async def get_available_languages(session: Session, clean_title: str, is_series: bool = True) -> list[dict]:
     """
-    Search MovieBox for all available language dubs/releases of a title (Hindi, Japanese, English, Russian, etc.).
-    Returns deduplicated list of available language items.
-    Prevents sequel number mismatches (e.g. Spider-Man 3 matching Spider-Man 2).
+    Search MovieBox in parallel for all available language releases (Hindi, Japanese, English, Korean, etc.).
+    Returns deduplicated list of available language items with pre-fetched seasons and episode counts.
+    Prevents sequel number mismatches.
     """
+    import asyncio
     seen_subjects = set()
     lang_map = {}
     clean_nums = extract_sequel_numbers(clean_title)
 
     queries = [clean_title, f"{clean_title} Hindi", f"{clean_title} English"]
-    for q in queries:
+
+    async def fetch_search_res(q_text: str):
         try:
-            search_client = Search(session=session, query=q)
-            res = await search_client.get_content_model()
-            if not res or not res.items:
+            sc = Search(session=session, query=q_text)
+            return await sc.get_content_model()
+        except Exception as err:
+            print(f"[VOD Scraper] Lang detection query '{q_text}' err: {err}")
+            return None
+
+    # Run all search queries concurrently for instant speed
+    search_results = await asyncio.gather(*(fetch_search_res(q) for q in queries))
+
+    for res in search_results:
+        if not res or not res.items:
+            continue
+        for it in res.items:
+            if it.subjectId in seen_subjects:
                 continue
-            for it in res.items:
-                if it.subjectId in seen_subjects:
-                    continue
-                seen_subjects.add(it.subjectId)
+            seen_subjects.add(it.subjectId)
 
-                it_is_series = it.subjectType == SubjectType.TV_SERIES or int(getattr(it, "subjectType", 1)) == 2
-                if is_series != it_is_series:
-                    continue
+            it_is_series = it.subjectType == SubjectType.TV_SERIES or int(getattr(it, "subjectType", 1)) == 2
+            if is_series != it_is_series:
+                continue
 
-                it_clean = re.sub(r'\[.*?\]', '', it.title).strip()
-                it_clean = re.sub(r'\s+S\d+(-S\d+)?', '', it_clean, flags=re.IGNORECASE).strip()
+            it_clean = re.sub(r'\[.*?\]', '', it.title).strip()
+            it_clean = re.sub(r'\s+S\d+(-S\d+)?', '', it_clean, flags=re.IGNORECASE).strip()
 
-                # Sequel number conflict check
-                it_nums = extract_sequel_numbers(it_clean)
-                if clean_nums and (not it_nums or not clean_nums.issubset(it_nums)):
-                    continue
+            # Sequel number conflict check
+            it_nums = extract_sequel_numbers(it_clean)
+            if clean_nums and (not it_nums or not clean_nums.issubset(it_nums)):
+                continue
 
-                sim = difflib.SequenceMatcher(None, clean_title.lower(), it_clean.lower()).ratio()
-                if sim < 0.70 and clean_title.lower() not in it_clean.lower() and it_clean.lower() not in clean_title.lower():
-                    continue
+            sim = difflib.SequenceMatcher(None, clean_title.lower(), it_clean.lower()).ratio()
+            if sim < 0.60 and clean_title.lower() not in it_clean.lower() and it_clean.lower() not in clean_title.lower():
+                continue
 
-                t_lower = it.title.lower()
-                c_lower = getattr(it, "countryName", "").lower()
+            t_lower = it.title.lower()
+            c_lower = getattr(it, "countryName", "").lower()
 
-                if "hindi" in t_lower:
-                    code, name = "hi", "Hindi"
-                elif "english" in t_lower:
-                    code, name = "en", "English"
-                elif "japanese" in t_lower or ("japan" in c_lower and "hindi" not in t_lower):
-                    code, name = "ja", "Japanese"
-                elif "korean" in t_lower or ("korea" in c_lower and "hindi" not in t_lower):
-                    code, name = "ko", "Korean"
-                elif "spanish" in t_lower or ("spain" in c_lower and "hindi" not in t_lower):
-                    code, name = "es", "Spanish"
-                elif "russian" in t_lower or ("russia" in c_lower):
-                    code, name = "ru", "Russian"
-                elif "tamil" in t_lower:
-                    code, name = "ta", "Tamil"
-                elif "telugu" in t_lower:
-                    code, name = "te", "Telugu"
-                elif any(w in c_lower for w in ["united states", "united kingdom", "canada", "australia"]):
-                    code, name = "en", "English"
-                else:
-                    code, name = "orig", "Original"
+            if "hindi" in t_lower:
+                code, name = "hi", "Hindi"
+            elif "english" in t_lower:
+                code, name = "en", "English"
+            elif "japanese" in t_lower or ("japan" in c_lower and "hindi" not in t_lower):
+                code, name = "ja", "Japanese"
+            elif "korean" in t_lower or ("korea" in c_lower and "hindi" not in t_lower):
+                code, name = "ko", "Korean"
+            elif "spanish" in t_lower or ("spain" in c_lower and "hindi" not in t_lower):
+                code, name = "es", "Spanish"
+            elif "russian" in t_lower or ("russia" in c_lower):
+                code, name = "ru", "Russian"
+            elif "tamil" in t_lower:
+                code, name = "ta", "Tamil"
+            elif "telugu" in t_lower:
+                code, name = "te", "Telugu"
+            elif any(w in c_lower for w in ["united states", "united kingdom", "canada", "australia"]):
+                code, name = "en", "English"
+            else:
+                code, name = "orig", "Original"
 
-                if code not in lang_map:
-                    lang_map[code] = {
-                        "code": code,
-                        "name": name,
-                        "item": it,
-                        "title": it.title
-                    }
-        except Exception as e:
-            print(f"[VOD Scraper] Lang detection error for query '{q}': {e}")
+            if code not in lang_map:
+                lang_map[code] = {
+                    "code": code,
+                    "name": name,
+                    "item": it,
+                    "title": it.title,
+                    "seasons": [],
+                    "ep_count": 0
+                }
 
     order = ["hi", "en", "ja", "ko", "es", "ru", "ta", "te", "orig"]
     sorted_langs = [lang_map[o] for o in order if o in lang_map]
@@ -538,26 +548,27 @@ async def get_available_languages(session: Session, clean_title: str, is_series:
         if info not in sorted_langs:
             sorted_langs.append(info)
 
-    # Fetch episode counts for each language variant (best-effort, don't block on failure)
-    for lang_info in sorted_langs:
+    # Concurrently pre-fetch TV series seasons and episode counts
+    async def fetch_details_for_lang(lang_info: dict):
         try:
             it = lang_info.get("item")
             if not it:
-                continue
+                return
             it_is_series = it.subjectType == SubjectType.TV_SERIES or int(getattr(it, "subjectType", 1)) == 2
             if it_is_series:
                 ep_session = Session()
-                tv_details_client = TVSeriesDetails(session=ep_session)
-                details = await tv_details_client.get_content_model(it)
+                tv_client = TVSeriesDetails(session=ep_session)
+                details = await tv_client.get_content_model(it)
                 if details and details.resource and details.resource.seasons:
-                    total_eps = sum(getattr(s, "maxEp", 0) for s in details.resource.seasons)
-                    lang_info["ep_count"] = total_eps
-                else:
-                    lang_info["ep_count"] = 0
+                    seasons = sorted(details.resource.seasons, key=lambda s: getattr(s, 'se', 0))
+                    lang_info["seasons"] = seasons
+                    lang_info["ep_count"] = sum(getattr(s, "maxEp", 0) for s in seasons)
             else:
-                lang_info["ep_count"] = 1  # Movie = 1
-        except Exception as ep_err:
-            print(f"[VOD Scraper] ep_count fetch error for {lang_info.get('name')}: {ep_err}")
-            lang_info.setdefault("ep_count", 0)
+                lang_info["ep_count"] = 0  # Movie
+        except Exception as err:
+            print(f"[VOD Scraper] details fetch error for {lang_info.get('name')}: {err}")
+
+    if sorted_langs:
+        await asyncio.gather(*(fetch_details_for_lang(l) for l in sorted_langs))
 
     return sorted_langs

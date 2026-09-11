@@ -357,15 +357,12 @@ async def main():
     me = await assistant.get_me()
     print(f"[Assistant] Logged in as: {me.first_name} (@{me.username or 'no username'})")
 
-    # Set default quality to 1080p @ 60 FPS on every startup
+    # Set default quality to 720p @ 60 FPS on every startup
     try:
-        from core.db import get_setting, set_setting
-        if not get_setting("quality_pref"):
-            set_setting("quality_pref", "1080p")
-            print("[Bot] Quality default set: 1080p")
-        if not get_setting("fps_pref"):
-            set_setting("fps_pref", "60")
-            print("[Bot] FPS default set: 60")
+        from core.db import set_setting
+        set_setting("quality_pref", "720p")
+        set_setting("fps_pref", "60")
+        print("[Bot] Quality default set: 720p @ 60fps")
     except Exception as qs_err:
         print(f"[Bot] Quality/FPS default setup error: {qs_err}")
 

@@ -127,16 +127,15 @@ WARN   = ''
 
 
 def get_configured_video_parameters():
-    """Reads configured target resolution and FPS from database for GAMEOVER MOVIE HUB."""
+    """Reads configured target resolution and FPS from database for GAMEOVER MOVIE HUB (default 720p @ 60 FPS)."""
     from core.db import get_setting
-    q = get_setting("quality_pref") or "1080p"
-    fps_str = get_setting("fps_pref") or "90"
+    q = get_setting("quality_pref") or "720p"
+    fps_str = get_setting("fps_pref") or "60"
     try:
         fps_val = int(fps_str)
     except Exception:
-        fps_val = 90
+        fps_val = 60
 
-    # Support 120, 90, 60, 30 FPS
     fps_val = min(120, max(15, fps_val))
 
     resolution_map = {
@@ -147,7 +146,7 @@ def get_configured_video_parameters():
         "480p": (854, 480, 480),
     }
 
-    w, h, max_h = resolution_map.get(q, (1920, 1080, 1080))
+    w, h, max_h = resolution_map.get(q, (1280, 720, 720))
     vid_params = VideoParameters(width=w, height=h, frame_rate=fps_val)
     return vid_params, q, fps_val, max_h
 
@@ -470,9 +469,9 @@ class PlayerManager:
         """
         Verify that the assistant account is in the chat.
         If not present, attempts:
-        1. bot.add_chat_members(chat_id, asst_id)
-        2. bot.create_chat_invite_link(chat_id) -> assistant.join_chat(invite)
-        3. assistant.join_chat(chat.username)
+        1. bot unbans and adds assistant directly
+        2. bot exports/creates invite link -> assistant joins chat
+        3. bot auto-approves join request if required
         Returns (is_in_chat, error_message, info_dict)
         """
         if not self._assistant:
@@ -489,7 +488,18 @@ class PlayerManager:
             "name": asst_me.first_name or "Assistant"
         }
 
-        # Check if already present in chat
+        _bot = bot_client or self.app
+
+        # Check 1: Check via bot (bot is admin and in chat, most reliable)
+        if _bot:
+            try:
+                member = await _bot.get_chat_member(chat_id, asst_me.id)
+                if member and member.status not in (enums.ChatMemberStatus.BANNED, enums.ChatMemberStatus.LEFT):
+                    return True, "", info
+            except Exception:
+                pass
+
+        # Check 2: Check via assistant client
         try:
             member = await self._assistant.get_chat_member(chat_id, "me")
             if member and member.status not in (enums.ChatMemberStatus.BANNED, enums.ChatMemberStatus.LEFT):
@@ -497,39 +507,72 @@ class PlayerManager:
         except Exception:
             pass
 
-        # Not in chat: try auto-invite/auto-add
-        _bot = bot_client or self.app
+        # Not in chat: try adding or inviting
         joined = False
 
         if _bot:
+            try:
+                await _bot.unban_chat_member(chat_id, asst_me.id)
+            except Exception:
+                pass
+
             try:
                 await _bot.add_chat_members(chat_id, asst_me.id)
                 joined = True
                 print(f"[Player] Added assistant to chat {chat_id} via bot.add_chat_members")
             except Exception as e:
-                print(f"[Player] bot.add_chat_members failed: {e}")
+                print(f"[Player] bot.add_chat_members note: {e}")
 
+        # Try invite link join
         if not joined and _bot:
+            invite_link = None
             try:
-                invite = await _bot.create_chat_invite_link(chat_id)
-                if invite and invite.invite_link:
-                    await self._assistant.join_chat(invite.invite_link)
-                    joined = True
-                    print(f"[Player] Assistant joined chat {chat_id} via invite link")
-            except Exception as e:
-                print(f"[Player] Assistant join via invite link failed: {e}")
+                chat_info = await _bot.get_chat(chat_id)
+                if chat_info.username:
+                    invite_link = chat_info.username
+                elif chat_info.invite_link:
+                    invite_link = chat_info.invite_link
+            except Exception:
+                pass
 
-        if not joined:
+            if not invite_link:
+                try:
+                    invite_link = await _bot.export_chat_invite_link(chat_id)
+                except Exception:
+                    try:
+                        inv = await _bot.create_chat_invite_link(chat_id)
+                        invite_link = inv.invite_link if inv else None
+                    except Exception as e:
+                        print(f"[Player] create_chat_invite_link note: {e}")
+
+            if invite_link:
+                try:
+                    await self._assistant.join_chat(invite_link)
+                    joined = True
+                    print(f"[Player] Assistant joined chat {chat_id} via link: {invite_link}")
+                except Exception as e:
+                    err_txt = str(e).lower()
+                    if "already" in err_txt or "participant" in err_txt:
+                        joined = True
+                    elif "request" in err_txt:
+                        try:
+                            await _bot.approve_chat_join_request(chat_id, asst_me.id)
+                            joined = True
+                            print(f"[Player] Bot approved assistant join request for chat {chat_id}")
+                        except Exception as ap_err:
+                            print(f"[Player] approve join request note: {ap_err}")
+                    else:
+                        print(f"[Player] Assistant join_chat failed: {e}")
+
+        # Final verification
+        if _bot:
             try:
-                chat = await self._assistant.get_chat(chat_id)
-                if chat and chat.username:
-                    await self._assistant.join_chat(chat.username)
-                    joined = True
-                    print(f"[Player] Assistant joined public chat @{chat.username}")
-            except Exception as e:
-                print(f"[Player] Assistant join via username failed: {e}")
+                member = await _bot.get_chat_member(chat_id, asst_me.id)
+                if member and member.status not in (enums.ChatMemberStatus.BANNED, enums.ChatMemberStatus.LEFT):
+                    return True, "", info
+            except Exception:
+                pass
 
-        # Final verification check
         try:
             member = await self._assistant.get_chat_member(chat_id, "me")
             if member and member.status not in (enums.ChatMemberStatus.BANNED, enums.ChatMemberStatus.LEFT):
@@ -537,12 +580,13 @@ class PlayerManager:
         except Exception:
             pass
 
+        # If voice chat is already running, PyTgCalls can often join without issue
+        # Only show notification if assistant is confirmed unreachable
         asst_tag = f"@{info['username']}" if info['username'] else f"<a href='tg://user?id={info['id']}'>{info['name']}</a>"
         err_msg = (
-            f"<b>⚠️ Assɪsᴛᴀɴᴛ Nᴏᴛ Fᴏᴜɴᴅ Iɴ Gʀᴏᴜᴘ</b>\n\n"
-            f"Bot ka Assistant account ({asst_tag}) is group mein add nahi ho saka!\n\n"
-            f"‣ Kripya Assistant ko group mein manually <b>Add karein</b> aur <b>Admin (Manage Video Chat)</b> banayein!\n"
-            f"‣ Ya phir <b>Bot ko Group Admin</b> banayein taaki bot Assistant ko invite kar sake."
+            f"<b>Assɪsᴛᴀɴᴛ Nᴏᴛ Iɴ Gʀᴏᴜᴘ</b>\n\n"
+            f"Bot ka Assistant account ({asst_tag}) is group mein nahi hai!\n\n"
+            f"‣ Kripya neeche diye gaye button par click karke Assistant ko group mein add karein:\n"
         )
         return False, err_msg, info
 
@@ -1253,13 +1297,66 @@ async def apply_styled_buttons(chat_id: int, message_id: int, buttons):
         print(f"[Player] apply_styled_buttons error: {e}")
 
 
-async def edit_styled_caption(chat_id: int, message_id: int, caption: str, buttons):
-    """Edits message caption and reply markup in a single Bot API call to avoid button style flickering."""
+_shared_bot_api_session = None
+
+def get_shared_bot_api_session():
+    """Returns a persistent pooled aiohttp session for lightning-fast Bot API calls."""
+    global _shared_bot_api_session
+    import aiohttp
+    if _shared_bot_api_session is None or _shared_bot_api_session.closed:
+        connector = aiohttp.TCPConnector(limit=60, keepalive_timeout=60)
+        _shared_bot_api_session = aiohttp.ClientSession(
+            connector=connector,
+            timeout=aiohttp.ClientTimeout(total=4.0)
+        )
+    return _shared_bot_api_session
+
+
+async def edit_styled_text(chat_id: int, message_id: int, text: str, buttons=None):
+    """Directly edits text message with reply markup using connection pooling for instant sub-second response."""
     try:
         from config import Config
         from bot import _markup_to_bot_api_json
         from core.clone_manager import clone_manager
-        import aiohttp, json
+        import json
+        token_val = clone_manager.get_token_for_chat(chat_id) or Config.BOT_TOKEN
+        if token_val:
+            payload = {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "text": text,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True,
+            }
+            if buttons:
+                payload["reply_markup"] = json.dumps({
+                    "inline_keyboard": _markup_to_bot_api_json(buttons)
+                })
+            session = get_shared_bot_api_session()
+            resp = await session.post(
+                f"https://api.telegram.org/bot{token_val}/editMessageText",
+                json=payload
+            )
+            if resp.status != 200:
+                # If message was video/photo, try editMessageCaption
+                cap_payload = dict(payload)
+                cap_payload["caption"] = cap_payload.pop("text")
+                cap_payload.pop("disable_web_page_preview", None)
+                await session.post(
+                    f"https://api.telegram.org/bot{token_val}/editMessageCaption",
+                    json=cap_payload
+                )
+    except Exception as e:
+        print(f"[Player] edit_styled_text error: {e}")
+
+
+async def edit_styled_caption(chat_id: int, message_id: int, caption: str, buttons=None):
+    """Edits message caption and reply markup in a single Bot API call using connection pooling."""
+    try:
+        from config import Config
+        from bot import _markup_to_bot_api_json
+        from core.clone_manager import clone_manager
+        import json
         token_val = clone_manager.get_token_for_chat(chat_id) or Config.BOT_TOKEN
         if token_val:
             payload = {
@@ -1267,23 +1364,24 @@ async def edit_styled_caption(chat_id: int, message_id: int, caption: str, butto
                 "message_id": message_id,
                 "caption": caption,
                 "parse_mode": "HTML",
-                "reply_markup": json.dumps({
+            }
+            if buttons:
+                payload["reply_markup"] = json.dumps({
                     "inline_keyboard": _markup_to_bot_api_json(buttons)
                 })
-            }
-            timeout = aiohttp.ClientTimeout(total=5.0)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                resp = await session.post(
-                    f"https://api.telegram.org/bot{token_val}/editMessageCaption",
-                    json=payload
+            session = get_shared_bot_api_session()
+            resp = await session.post(
+                f"https://api.telegram.org/bot{token_val}/editMessageCaption",
+                json=payload
+            )
+            if resp.status != 200:
+                text_payload = dict(payload)
+                text_payload["text"] = text_payload.pop("caption")
+                text_payload["disable_web_page_preview"] = True
+                await session.post(
+                    f"https://api.telegram.org/bot{token_val}/editMessageText",
+                    json=text_payload
                 )
-                if resp.status != 200:
-                    text_payload = dict(payload)
-                    text_payload["text"] = text_payload.pop("caption")
-                    await session.post(
-                        f"https://api.telegram.org/bot{token_val}/editMessageText",
-                        json=text_payload
-                    )
     except Exception as e:
         print(f"[Player] edit_styled_caption error: {e}")
 
