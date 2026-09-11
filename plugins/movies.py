@@ -480,10 +480,14 @@ def register(app: Client):
     @app.on_message(filters.command(["trending", "latest"]) & filters.group)
     async def trending_command(client: Client, message: Message):
         chat_id = message.chat.id
-        from core.db import is_group_bot_active
+        from core.db import is_group_bot_active, check_user_play_permission
         if not is_group_bot_active(chat_id):
             return
         user = message.from_user
+        can_play, perm_err = await check_user_play_permission(client, chat_id, user)
+        if not can_play:
+            await message.reply_text(f"{HEADER}{perm_err}", parse_mode=enums.ParseMode.HTML)
+            return
         user_id = user.id if user else 0
         print(f"[MOVIES Engine] Trending command triggered by user {user_id} in chat {chat_id}")
         status_msg = await show_loading_animation(chat_id, "Fetching Trending List")
@@ -497,10 +501,14 @@ def register(app: Client):
     @app.on_message(filters.command("random") & filters.group)
     async def random_command(client: Client, message: Message):
         chat_id = message.chat.id
-        from core.db import is_group_bot_active
+        from core.db import is_group_bot_active, check_user_play_permission
         if not is_group_bot_active(chat_id):
             return
         user = message.from_user
+        can_play, perm_err = await check_user_play_permission(client, chat_id, user)
+        if not can_play:
+            await message.reply_text(f"{HEADER}{perm_err}", parse_mode=enums.ParseMode.HTML)
+            return
         user_id = user.id if user else 0
         print(f"[MOVIES Engine] Random command triggered by user {user_id} in chat {chat_id}")
         status_msg = await show_loading_animation(chat_id, "Shuffling movie database")
@@ -660,10 +668,14 @@ def register(app: Client):
     @app.on_message(filters.command(["movie", "vod"]) & filters.group)
     async def movie_command(client: Client, message: Message):
         chat_id = message.chat.id
-        from core.db import is_group_bot_active
+        from core.db import is_group_bot_active, check_user_play_permission
         if not is_group_bot_active(chat_id):
             return
         user = message.from_user
+        can_play, perm_err = await check_user_play_permission(client, chat_id, user)
+        if not can_play:
+            await message.reply_text(f"{HEADER}{perm_err}", parse_mode=enums.ParseMode.HTML)
+            return
         user_id = user.id if user else 0
 
         if len(message.command) < 2:
@@ -800,6 +812,12 @@ def register(app: Client):
     @app.on_callback_query(filters.regex(r"^VODLANG_PLAY\|"))
     async def vodlang_play_callback(client: Client, query: CallbackQuery):
         chat_id = query.message.chat.id
+        user = query.from_user
+        from core.db import check_user_play_permission
+        can_play, perm_err = await check_user_play_permission(client, chat_id, user)
+        if not can_play:
+            await query.answer("Aapko is group mein movie play karne ki permission nahi hai!", show_alert=True)
+            return
         parts = query.data.split("|")
         allowed_uid = int(parts[1])
         
@@ -829,6 +847,12 @@ def register(app: Client):
     @app.on_callback_query(filters.regex(r"^VODLANG\|"))
     async def vodlang_callback(client: Client, query: CallbackQuery):
         chat_id = query.message.chat.id
+        user = query.from_user
+        from core.db import check_user_play_permission
+        can_play, perm_err = await check_user_play_permission(client, chat_id, user)
+        if not can_play:
+            await query.answer("Aapko is group mein movie play karne ki permission nahi hai!", show_alert=True)
+            return
         data = query.data
         parts = data.split("|")
         
@@ -897,9 +921,14 @@ def register(app: Client):
     @app.on_callback_query(filters.regex(r"^VOD\|"))
     async def vod_callback(client: Client, query: CallbackQuery):
         chat_id = query.message.chat.id
-        from core.db import is_group_bot_active
+        from core.db import is_group_bot_active, check_user_play_permission
         if not is_group_bot_active(chat_id):
             await query.answer("Bot is currently disabled in this group by Admin.", show_alert=True)
+            return
+        user = query.from_user
+        can_play, perm_err = await check_user_play_permission(client, chat_id, user)
+        if not can_play:
+            await query.answer("Aapko is group mein movie play karne ki permission nahi hai!", show_alert=True)
             return
         data = query.data
         parts = data.split("|")
@@ -1020,6 +1049,12 @@ def register(app: Client):
         except:
             pass
         chat_id = query.message.chat.id
+        user = query.from_user
+        from core.db import check_user_play_permission
+        can_play, perm_err = await check_user_play_permission(client, chat_id, user)
+        if not can_play:
+            await query.answer("Aapko is group mein movie play karne ki permission nahi hai!", show_alert=True)
+            return
         data = query.data
         parts = data.split("|")
         
@@ -1046,6 +1081,12 @@ def register(app: Client):
     @app.on_callback_query(filters.regex(r"^VODRESUME\|"))
     async def vod_resume_callback(client: Client, query: CallbackQuery):
         chat_id = query.message.chat.id
+        user = query.from_user
+        from core.db import check_user_play_permission
+        can_play, perm_err = await check_user_play_permission(client, chat_id, user)
+        if not can_play:
+            await query.answer("Aapko is group mein movie play karne ki permission nahi hai!", show_alert=True)
+            return
         data = query.data
         parts = data.split("|")
         
@@ -1083,6 +1124,12 @@ def register(app: Client):
     @app.on_callback_query(filters.regex(r"^VODSTARTOVER\|"))
     async def vod_startover_callback(client: Client, query: CallbackQuery):
         chat_id = query.message.chat.id
+        user = query.from_user
+        from core.db import check_user_play_permission
+        can_play, perm_err = await check_user_play_permission(client, chat_id, user)
+        if not can_play:
+            await query.answer("Aapko is group mein movie play karne ki permission nahi hai!", show_alert=True)
+            return
         data = query.data
         parts = data.split("|")
         

@@ -256,6 +256,58 @@ def get_clones_panel_markup(page: int = 0) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(buttons)
 
 
+def get_playmode_panel(chat_id: int, current_mode: str) -> tuple[str, InlineKeyboardMarkup]:
+    from core.fonts import HEADER
+    mode_name_map = {
+        "user": "Usᴇʀ Mᴏᴅᴇ (Everyone)",
+        "admin": "Aᴅᴍɪɴ Mᴏᴅᴇ (Admins Only)",
+        "auth": "Aᴜᴛʜ Mᴏᴅᴇ (Authorized Only)"
+    }
+    mode_display = mode_name_map.get(current_mode, "Usᴇʀ Mᴏᴅᴇ (Everyone)")
+
+    caption = (
+        f"{HEADER}"
+        f"‣ <b>Pʟᴀʏ Mᴏᴅᴇ Sᴇᴛᴛɪɴɢs</b>\n"
+        f"‣ <b>Cᴜʀʀᴇɴᴛ Mᴏᴅᴇ :</b> <code>{mode_display}</code>\n\n"
+        f"<i>Neeche se is group ka play mode select karein:</i>\n\n"
+        f"• <b>Usᴇʀ Mᴏᴅᴇ :</b> Har koi movie search aur play kar sakta hai.\n"
+        f"• <b>Aᴅᴍɪɴ Mᴏᴅᴇ :</b> Sirf group admins movie play kar sakte hain.\n"
+        f"• <b>Aᴜᴛʜ Mᴏᴅᴇ :</b> Sirf authorized users aur admins movie play kar sakte hain."
+    )
+
+    is_u = (current_mode == "user")
+    is_adm = (current_mode == "admin")
+    is_ath = (current_mode == "auth")
+
+    buttons = [
+        [
+            InlineKeyboardButton(
+                f"{'[Active] ' if is_u else ''}Usᴇʀ Mᴏᴅᴇ (Everyone)",
+                callback_data=f"set_pm_user_{chat_id}",
+                style="success" if is_u else "primary"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                f"{'[Active] ' if is_adm else ''}Aᴅᴍɪɴ Mᴏᴅᴇ (Admins Only)",
+                callback_data=f"set_pm_admin_{chat_id}",
+                style="success" if is_adm else "primary"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                f"{'[Active] ' if is_ath else ''}Aᴜᴛʜ Mᴏᴅᴇ (Authorized Only)",
+                callback_data=f"set_pm_auth_{chat_id}",
+                style="success" if is_ath else "primary"
+            )
+        ],
+        [
+            InlineKeyboardButton("Cʟᴏsᴇ", callback_data=f"close_pm_{chat_id}", style="danger")
+        ]
+    ]
+    return caption, InlineKeyboardMarkup(buttons)
+
+
 def register(app: Client):
 
     def is_admin_filter(_, __, message: Message) -> bool:
@@ -886,84 +938,259 @@ def register(app: Client):
             )
             await send_styled(client=client, chat_id=query.message.chat.id, text=alert_caption, message_id=query.message.id)
 
-    # ─── /auth and /unauth commands ───────────────────────────────────────────
-    @app.on_message(filters.command("auth") & filters.create(is_admin_filter))
+    # ─── /auth, /unauth, /authusers, and /playmode commands ──────────────────
+    @app.on_message(filters.command(["auth", "authorize"]))
     async def auth_cmd_handler(client: Client, message: Message):
+        chat_id = message.chat.id
+        sender = message.from_user
+        sender_id = sender.id if sender else 0
+        is_priv = message.chat.type == enums.ChatType.PRIVATE
+
+        if is_priv:
+            if sender_id not in (Config.OWNER_ID, 6805412676) and not is_sudo_user(sender_id):
+                return
+        else:
+            from core.db import is_group_admin
+            admin_ok = await is_group_admin(client, chat_id, sender_id)
+            if not admin_ok:
+                await message.reply_text(
+                    f"{ROYAL_HEADER}<b>Sirf Group Admins kisi user ko authorize kar sakte hain!</b>",
+                    parse_mode=enums.ParseMode.HTML
+                )
+                return
+
         target_uid = None
         target_name = ""
         target_username = ""
-        
+
         if message.reply_to_message and message.reply_to_message.from_user:
             u = message.reply_to_message.from_user
             target_uid = u.id
             target_name = u.first_name or ""
             target_username = u.username or ""
         elif len(message.command) > 1:
-            raw = message.command[1]
-            try:
-                if raw.isdigit():
-                    target_uid = int(raw)
-                else:
+            raw = message.command[1].strip()
+            if raw.isdigit():
+                target_uid = int(raw)
+            else:
+                if raw.startswith("@"):
+                    raw = raw[1:]
+                try:
                     u = await client.get_users(raw)
                     if u:
                         target_uid = u.id
                         target_name = u.first_name or ""
                         target_username = u.username or ""
-            except Exception:
-                pass
-                
+                except Exception:
+                    pass
+
         if not target_uid:
             await message.reply_text(
                 f"{ROYAL_HEADER}"
-                f"<b>Usage:</b> <code>/auth &lt;user_id or @username&gt;</code> (ya kisi user ke message ko reply karein)",
+                f"<b>Usage:</b> Kisi user ke message par reply karke <code>/auth</code> likhein ya <code>/auth @username</code> use karein.",
                 parse_mode=enums.ParseMode.HTML
             )
             return
-            
-        from core.db import add_global_auth_user
-        sender_id = message.from_user.id if message.from_user else 0
-        add_global_auth_user(target_uid, target_username, target_name, added_by=sender_id)
-        await message.reply_text(
-            f"{ROYAL_HEADER}"
-            f"✅ <b>Usᴇʀ Aᴜᴛʜᴏʀɪᴢᴇᴅ Sᴜᴄᴄᴇssғᴜʟʟʏ!</b>\n\n"
-            f"‣ <b>User ID:</b> <code>{target_uid}</code>\n"
-            f"‣ <b>Name:</b> {target_name or 'User'}\n"
-            f"‣ <b>Username:</b> @{target_username or 'N/A'}\n\n"
-            f"<i>Yeh user ab globally authorized hai aur bot ko manage kar sakta hai.</i>",
-            parse_mode=enums.ParseMode.HTML
-        )
 
-    @app.on_message(filters.command("unauth") & filters.create(is_admin_filter))
+        uname_str = f" (@{target_username})" if target_username else ""
+
+        if is_priv:
+            from core.db import add_global_auth_user
+            add_global_auth_user(target_uid, target_username, target_name, added_by=sender_id)
+            await message.reply_text(
+                f"{ROYAL_HEADER}"
+                f"✅ <b>Usᴇʀ Gʟᴏʙᴀʟʟʏ Aᴜᴛʜᴏʀɪᴢᴇᴅ!</b>\n\n"
+                f"‣ <b>User ID:</b> <code>{target_uid}</code>\n"
+                f"‣ <b>Name:</b> {target_name or 'User'}{uname_str}\n\n"
+                f"<i>Yeh user ab globally authorized hai.</i>",
+                parse_mode=enums.ParseMode.HTML
+            )
+        else:
+            from core.db import add_auth_user
+            add_auth_user(
+                chat_id=chat_id,
+                user_id=target_uid,
+                username=target_username,
+                first_name=target_name,
+                added_by=sender_id
+            )
+            await message.reply_text(
+                f"{ROYAL_HEADER}"
+                f"✅ <b>Usᴇʀ Aᴜᴛʜᴏʀɪᴢᴇᴅ Sᴜᴄᴄᴇssғᴜʟʟʏ!</b>\n\n"
+                f"‣ <b>Nᴀᴍᴇ :</b> <b>{target_name or 'User'}</b>{uname_str}\n"
+                f"‣ <b>Usᴇʀ ID :</b> <code>{target_uid}</code>\n"
+                f"‣ <b>Aᴅᴅᴇᴅ Bʏ :</b> {sender.first_name if sender else 'Admin'}\n\n"
+                f"<i>Yeh user ab is group mein movie search aur playback controls use kar sakta hai.</i>",
+                parse_mode=enums.ParseMode.HTML
+            )
+
+    @app.on_message(filters.command(["unauth", "deauth"]))
     async def unauth_cmd_handler(client: Client, message: Message):
+        chat_id = message.chat.id
+        sender = message.from_user
+        sender_id = sender.id if sender else 0
+        is_priv = message.chat.type == enums.ChatType.PRIVATE
+
+        if is_priv:
+            if sender_id not in (Config.OWNER_ID, 6805412676) and not is_sudo_user(sender_id):
+                return
+        else:
+            from core.db import is_group_admin
+            admin_ok = await is_group_admin(client, chat_id, sender_id)
+            if not admin_ok:
+                await message.reply_text(
+                    f"{ROYAL_HEADER}<b>Sirf Group Admins kisi user ko unauthorize kar sakte hain!</b>",
+                    parse_mode=enums.ParseMode.HTML
+                )
+                return
+
         target_uid = None
         if message.reply_to_message and message.reply_to_message.from_user:
             target_uid = message.reply_to_message.from_user.id
         elif len(message.command) > 1:
-            raw = message.command[1]
-            try:
-                if raw.isdigit():
-                    target_uid = int(raw)
-                else:
+            raw = message.command[1].strip()
+            if raw.isdigit():
+                target_uid = int(raw)
+            else:
+                if raw.startswith("@"):
+                    raw = raw[1:]
+                try:
                     u = await client.get_users(raw)
                     if u:
                         target_uid = u.id
-            except Exception:
-                pass
-                
+                except Exception:
+                    pass
+
         if not target_uid:
             await message.reply_text(
                 f"{ROYAL_HEADER}"
-                f"<b>Usage:</b> <code>/unauth &lt;user_id or @username&gt;</code> (ya kisi user ke message ko reply karein)",
+                f"<b>Usage:</b> Kisi user ke message par reply karke <code>/unauth</code> likhein ya <code>/unauth @username</code> use karein.",
                 parse_mode=enums.ParseMode.HTML
             )
             return
-            
-        from core.db import remove_global_auth_user
-        remove_global_auth_user(target_uid)
-        await message.reply_text(
-            f"{ROYAL_HEADER}"
-            f"❌ <b>Usᴇʀ Uɴᴀᴜᴛʜᴏʀɪᴢᴇᴅ Sᴜᴄᴄᴇssғᴜʟʟʏ!</b>\n\n"
-            f"‣ <b>User ID:</b> <code>{target_uid}</code>\n\n"
-            f"<i>Is user se authorization permissions hata di gayi hain.</i>",
-            parse_mode=enums.ParseMode.HTML
-        )
+
+        if is_priv:
+            from core.db import remove_global_auth_user
+            remove_global_auth_user(target_uid)
+            await message.reply_text(
+                f"{ROYAL_HEADER}"
+                f"❌ <b>Usᴇʀ Gʟᴏʙᴀʟʟʏ Uɴᴀᴜᴛʜᴏʀɪᴢᴇᴅ!</b>\n\n"
+                f"‣ <b>User ID:</b> <code>{target_uid}</code>\n"
+                f"<i>Is user se global authorization permissions hata di gayi hain.</i>",
+                parse_mode=enums.ParseMode.HTML
+            )
+        else:
+            from core.db import remove_auth_user
+            remove_auth_user(chat_id, target_uid)
+            await message.reply_text(
+                f"{ROYAL_HEADER}"
+                f"❌ <b>Usᴇʀ Uɴᴀᴜᴛʜᴏʀɪᴢᴇᴅ!</b>\n\n"
+                f"‣ <b>User ID:</b> <code>{target_uid}</code>\n"
+                f"<i>Is user se is group ki authorization permissions hata di gayi hain.</i>",
+                parse_mode=enums.ParseMode.HTML
+            )
+
+    @app.on_message(filters.command(["authusers", "authlist"]) & filters.group)
+    async def authusers_cmd_handler(client: Client, message: Message):
+        chat_id = message.chat.id
+        from core.db import get_auth_users
+        users = get_auth_users(chat_id)
+        if not users:
+            await message.reply_text(
+                f"{ROYAL_HEADER}"
+                f"<b>Is group mein koi authorized user nahi hai.</b>\n\n"
+                f"Naya user add karne ke liye kisi user ke message par reply karke <code>/auth</code> likhein.",
+                parse_mode=enums.ParseMode.HTML
+            )
+            return
+
+        lines = [
+            f"{ROYAL_HEADER}",
+            f"<b>Aᴜᴛʜᴏʀɪᴢᴇᴅ Usᴇʀs Lɪsᴛ</b>\n",
+            f"Total: <code>{len(users)}</code> users\n"
+        ]
+        for idx, u in enumerate(users, 1):
+            name = u.get("first_name") or "User"
+            uname = f" (@{u['username']})" if u.get("username") else ""
+            lines.append(f"{idx}. <b>{name}</b>{uname} [<code>{u['user_id']}</code>]")
+
+        await message.reply_text("\n".join(lines), parse_mode=enums.ParseMode.HTML)
+
+    @app.on_message(filters.command(["playmode", "mode"]) & filters.group)
+    async def playmode_cmd_handler(client: Client, message: Message):
+        chat_id = message.chat.id
+        sender = message.from_user
+        sender_id = sender.id if sender else 0
+
+        from core.db import is_group_admin, get_play_mode, set_play_mode
+        admin_ok = await is_group_admin(client, chat_id, sender_id)
+        if not admin_ok:
+            await message.reply_text(
+                f"{ROYAL_HEADER}<b>Sirf Group Admins play mode change kar sakte hain!</b>",
+                parse_mode=enums.ParseMode.HTML
+            )
+            return
+
+        if len(message.command) > 1:
+            target = message.command[1].lower().strip()
+            if target in ("user", "everyone", "all"):
+                set_play_mode(chat_id, "user")
+                await message.reply_text(
+                    f"{ROYAL_HEADER}✅ Play mode <b>Usᴇʀ Mᴏᴅᴇ (Everyone)</b> set kar diya gaya hai!\n\nAb group ka har member movie search aur play kar sakta hai.",
+                    parse_mode=enums.ParseMode.HTML
+                )
+                return
+            elif target in ("admin", "admins"):
+                set_play_mode(chat_id, "admin")
+                await message.reply_text(
+                    f"{ROYAL_HEADER}✅ Play mode <b>Aᴅᴍɪɴ Mᴏᴅᴇ</b> set kar diya gaya hai!\n\nAb sirf group admins movie play aur controls use kar sakte hain.",
+                    parse_mode=enums.ParseMode.HTML
+                )
+                return
+            elif target in ("auth", "authorized"):
+                set_play_mode(chat_id, "auth")
+                await message.reply_text(
+                    f"{ROYAL_HEADER}✅ Play mode <b>Aᴜᴛʜ Mᴏᴅᴇ</b> set kar diya gaya hai!\n\nAb sirf authorized users aur admins movie play aur controls use kar sakte hain.",
+                    parse_mode=enums.ParseMode.HTML
+                )
+                return
+
+        curr_mode = get_play_mode(chat_id)
+        caption, markup = get_playmode_panel(chat_id, curr_mode)
+        await send_styled(client=client, chat_id=chat_id, text=caption, markup=markup)
+
+    @app.on_callback_query(filters.regex(r"^(set_pm_|close_pm_)"))
+    async def playmode_callback_handler(client: Client, query: CallbackQuery):
+        chat_id = query.message.chat.id
+        data = query.data
+        user = query.from_user
+        user_id = user.id if user else 0
+
+        from core.db import is_group_admin, get_play_mode, set_play_mode
+        admin_ok = await is_group_admin(client, chat_id, user_id)
+        if not admin_ok:
+            await query.answer("Sirf Group Admins play mode change kar sakte hain!", show_alert=True)
+            return
+
+        if data.startswith("close_pm_"):
+            try:
+                await query.message.delete()
+            except Exception:
+                pass
+            return
+
+        if data.startswith("set_pm_"):
+            parts = data.split("_")
+            new_mode = parts[2]
+            target_chat_id = int(parts[3])
+            set_play_mode(target_chat_id, new_mode)
+
+            mode_labels = {
+                "user": "User Mode (Everyone)",
+                "admin": "Admin Mode (Admins Only)",
+                "auth": "Auth Mode (Authorized Only)"
+            }
+            await query.answer(f"Play mode updated to {mode_labels.get(new_mode, new_mode)}!", show_alert=True)
+
+            caption, markup = get_playmode_panel(target_chat_id, new_mode)
+            await send_styled(client=client, chat_id=target_chat_id, text=caption, markup=markup, message_id=query.message.id)

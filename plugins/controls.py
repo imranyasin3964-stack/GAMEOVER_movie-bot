@@ -230,6 +230,11 @@ def register(app: Client):
     async def skip_command(client: Client, message: Message):
         chat_id = message.chat.id
         user = message.from_user
+        from core.db import check_user_play_permission
+        can_play, perm_err = await check_user_play_permission(client, chat_id, user)
+        if not can_play:
+            await message.reply_text(f"{HEADER}{perm_err}", parse_mode=enums.ParseMode.HTML)
+            return
         user_id = user.id if user else 0
         user_name = user.first_name if user else "Someone"
         print(f"\n[Cmd] Skip/Vote in chat {chat_id} by user {user_id}")
@@ -269,6 +274,12 @@ def register(app: Client):
     @app.on_message(filters.command(["stop", "end", "leave"]) & filters.group)
     async def stop_command(client: Client, message: Message):
         chat_id = message.chat.id
+        user = message.from_user
+        from core.db import check_user_play_permission
+        can_play, perm_err = await check_user_play_permission(client, chat_id, user)
+        if not can_play:
+            await message.reply_text(f"{HEADER}{perm_err}", parse_mode=enums.ParseMode.HTML)
+            return
         print(f"\n[Cmd] /stop in chat {chat_id}")
         await stream_manager.stop(chat_id)
         user_name = message.from_user.first_name if message.from_user else "Someone"
@@ -284,6 +295,12 @@ def register(app: Client):
     @app.on_message(filters.command(["pause"]) & filters.group)
     async def pause_command(client: Client, message: Message):
         chat_id = message.chat.id
+        user = message.from_user
+        from core.db import check_user_play_permission
+        can_play, perm_err = await check_user_play_permission(client, chat_id, user)
+        if not can_play:
+            await message.reply_text(f"{HEADER}{perm_err}", parse_mode=enums.ParseMode.HTML)
+            return
         if not queue_manager.is_playing(chat_id):
             await message.reply_text(
                 f"{HEADER}"
@@ -314,6 +331,12 @@ def register(app: Client):
     @app.on_message(filters.command(["resume", "r"]) & filters.group)
     async def resume_command(client: Client, message: Message):
         chat_id = message.chat.id
+        user = message.from_user
+        from core.db import check_user_play_permission
+        can_play, perm_err = await check_user_play_permission(client, chat_id, user)
+        if not can_play:
+            await message.reply_text(f"{HEADER}{perm_err}", parse_mode=enums.ParseMode.HTML)
+            return
         success = await stream_manager.resume(chat_id)
         if success:
             song = queue_manager.get_current(chat_id)
@@ -336,6 +359,12 @@ def register(app: Client):
     @app.on_message(filters.command(["loop"]) & filters.group)
     async def loop_command(client: Client, message: Message):
         chat_id = message.chat.id
+        user = message.from_user
+        from core.db import check_user_play_permission
+        can_play, perm_err = await check_user_play_permission(client, chat_id, user)
+        if not can_play:
+            await message.reply_text(f"{HEADER}{perm_err}", parse_mode=enums.ParseMode.HTML)
+            return
         if not queue_manager.is_playing(chat_id):
             await message.reply_text(
                 f"{HEADER}"
@@ -416,7 +445,17 @@ def register(app: Client):
 
         # Admin controls gate
         if (data.startswith("play_") or data.startswith("opt_")) and not data.startswith("play_close"):
-            if current and getattr(current, "requester_id", 0) != 0:
+            from core.db import check_user_play_permission, get_play_mode
+            can_play, perm_err = await check_user_play_permission(client, chat_id, user)
+            if not can_play:
+                try:
+                    await callback_query.answer("Aapko is group mein playback control karne ki permission nahi hai!", show_alert=True)
+                except Exception:
+                    pass
+                return
+
+            mode = get_play_mode(chat_id)
+            if mode != "user" and current and getattr(current, "requester_id", 0) != 0:
                 req_id = current.requester_id
                 if user.id != req_id:
                     is_admin = False

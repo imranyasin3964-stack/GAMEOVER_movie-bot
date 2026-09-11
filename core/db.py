@@ -6,8 +6,10 @@ Handles persistent storage for Sudo Admins, Auth Groups, Allowed Groups, and Use
 import sqlite3
 import json
 import time
+import os
 
-DB_FILE = "gameover_db.sqlite3"
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DB_FILE = os.path.join(BASE_DIR, "gameover_db.sqlite3")
 
 def get_db():
     conn = sqlite3.connect(DB_FILE, timeout=30.0)
@@ -32,7 +34,19 @@ def init_db():
         CREATE TABLE IF NOT EXISTS auth_users (
             chat_id INTEGER,
             user_id INTEGER,
+            username TEXT,
+            first_name TEXT,
+            added_by INTEGER,
+            timestamp REAL,
             PRIMARY KEY (chat_id, user_id)
+        )
+    """)
+
+    # Table for Chat Settings (play_mode: user, admin, auth)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS chat_settings (
+            chat_id INTEGER PRIMARY KEY,
+            play_mode TEXT DEFAULT 'user'
         )
     """)
     
@@ -209,6 +223,18 @@ def init_db():
         )
     """)
 
+    # Check if columns exist in auth_users (migration for existing database)
+    cursor.execute("PRAGMA table_info(auth_users)")
+    auth_cols = [col[1] for col in cursor.fetchall()]
+    if auth_cols and "username" not in auth_cols:
+        cursor.execute("ALTER TABLE auth_users ADD COLUMN username TEXT")
+    if auth_cols and "first_name" not in auth_cols:
+        cursor.execute("ALTER TABLE auth_users ADD COLUMN first_name TEXT")
+    if auth_cols and "added_by" not in auth_cols:
+        cursor.execute("ALTER TABLE auth_users ADD COLUMN added_by INTEGER")
+    if auth_cols and "timestamp" not in auth_cols:
+        cursor.execute("ALTER TABLE auth_users ADD COLUMN timestamp REAL")
+
     conn.commit()
     conn.close()
 
@@ -300,11 +326,19 @@ def set_setting(key: str, value: str):
         conn.close()
 
 # ─── Auth Users Helpers ─────────────────────────────────
-def add_auth_user(chat_id: int, user_id: int):
+def add_auth_user(chat_id: int, user_id: int, username: str = "", first_name: str = "", added_by: int = 0):
     conn = get_db()
     cursor = conn.cursor()
     try:
-        cursor.execute("INSERT OR IGNORE INTO auth_users (chat_id, user_id) VALUES (?, ?)", (chat_id, user_id))
+        cursor.execute("""
+            INSERT INTO auth_users (chat_id, user_id, username, first_name, added_by, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(chat_id, user_id) DO UPDATE SET
+                username = excluded.username,
+                first_name = excluded.first_name,
+                added_by = excluded.added_by,
+                timestamp = excluded.timestamp
+        """, (chat_id, user_id, username, first_name, added_by, time.time()))
         conn.commit()
     finally:
         conn.close()
@@ -322,9 +356,9 @@ def get_auth_users(chat_id: int) -> list:
     conn = get_db()
     cursor = conn.cursor()
     try:
-        cursor.execute("SELECT user_id FROM auth_users WHERE chat_id = ?", (chat_id,))
+        cursor.execute("SELECT user_id, username, first_name, added_by, timestamp FROM auth_users WHERE chat_id = ?", (chat_id,))
         rows = cursor.fetchall()
-        return [row["user_id"] for row in rows]
+        return [dict(row) for row in rows]
     finally:
         conn.close()
 
@@ -336,6 +370,85 @@ def is_auth_user(chat_id: int, user_id: int) -> bool:
         return cursor.fetchone() is not None
     finally:
         conn.close()
+
+# ─── Chat Settings & Play Mode Helpers ──────────────────
+def get_play_mode(chat_id: int) -> str:
+    """Returns 'user', 'admin', or 'auth' (default 'user')."""
+    conn = get_db()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT play_mode FROM chat_settings WHERE chat_id = ?", (chat_id,))
+        row = cursor.fetchone()
+        return str(row["play_mode"]).lower() if row and row["play_mode"] else "user"
+    finally:
+        conn.close()
+
+def set_play_mode(chat_id: int, mode: str):
+    """Sets play_mode to 'user', 'admin', or 'auth'."""
+    mode = str(mode).lower().strip()
+    if mode not in ("user", "admin", "auth"):
+        mode = "user"
+    conn = get_db()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            INSERT INTO chat_settings (chat_id, play_mode) VALUES (?, ?)
+            ON CONFLICT(chat_id) DO UPDATE SET play_mode = excluded.play_mode
+        """, (chat_id, mode))
+        conn.commit()
+    finally:
+        conn.close()
+
+async def is_group_admin(client, chat_id: int, user_id: int) -> bool:
+    if not user_id:
+        return False
+    from config import Config
+    if user_id in (Config.OWNER_ID, 6805412676):
+        return True
+    if is_sudo_user(user_id):
+        return True
+    try:
+        from pyrogram import enums
+        member = await client.get_chat_member(chat_id, user_id)
+        return member.status in (enums.ChatMemberStatus.ADMINISTRATOR, enums.ChatMemberStatus.OWNER)
+    except Exception:
+        return False
+
+async def check_user_play_permission(client, chat_id: int, user) -> tuple[bool, str]:
+    """
+    Checks if a user is allowed to play or control media according to the group's play_mode:
+    - 'user' (Everyone): allowed
+    - 'admin': only group admins / owner / sudo allowed
+    - 'auth': only auth users + group admins / owner / sudo allowed
+    Returns (is_allowed, reason_msg)
+    """
+    from config import Config
+    user_id = user.id if user else 0
+    if not user_id:
+        return False, "User not found."
+
+    # Bot Owner and Sudo Users always have full permission
+    if user_id in (Config.OWNER_ID, 6805412676) or is_sudo_user(user_id):
+        return True, ""
+
+    mode = get_play_mode(chat_id)
+    if mode == "user":
+        return True, ""
+
+    # Check if user is a group admin
+    admin_ok = await is_group_admin(client, chat_id, user_id)
+    if admin_ok:
+        return True, ""
+
+    if mode == "admin":
+        return False, "<b>Aᴅᴍɪɴ Mᴏᴅᴇ Active Hai!</b>\n\nIs group mein sirf <b>Group Admins</b> movie search ya controls use kar sakte hain."
+
+    if mode == "auth":
+        if is_auth_user(chat_id, user_id) or is_global_auth_user(user_id):
+            return True, ""
+        return False, "<b>Aᴜᴛʜ Mᴏᴅᴇ Active Hai!</b>\n\nAap is group mein authorized nahi hain. Movie play karne ke liye group admin se <code>/auth</code> lene ko kahein."
+
+    return True, ""
 
 # ─── Allowed Groups Helpers ─────────────────────────────
 def add_allowed_group(chat_id: int):
