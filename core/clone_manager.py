@@ -182,10 +182,11 @@ class CloneManager:
             )
 
         # ── Register all shared plugins onto the clone client ──
-        from plugins import movies, controls, welcome
+        from plugins import movies, controls, welcome, admin
         movies.register(clone_client)
         controls.register(clone_client)
         welcome.register(clone_client)
+        admin.register(clone_client)
 
         # Start Pyrogram client
         await clone_client.start()

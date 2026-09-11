@@ -30,28 +30,50 @@ async def update_trending_cache():
                 print("[TrendingManager] Homepage list empty or unreachable.")
                 return False
 
-            # Extract popular items
-            pop_movies_category = next((op for op in content.operatingList if op.title == "Popular Movie"), None)
-            pop_series_category = next((op for op in content.operatingList if op.title == "Popular Series"), None)
+            # Collect items from all movie & series categories on Homepage
+            movie_keywords = ["movie", "cinema", "hollywood", "bollywood", "south indian", "top20", "trending now", "popular movie"]
+            series_keywords = ["series", "tv", "drama", "anime", "k-drama", "c-drama", "top series", "popular series", "western tv", "indian drama"]
 
-            # Limit categories to top 10 items each
-            movies = pop_movies_category.subjects[:10] if pop_movies_category and pop_movies_category.subjects else []
-            series = pop_series_category.subjects[:10] if pop_series_category and pop_series_category.subjects else []
+            seen_movie_ids = set()
+            seen_series_ids = set()
+            movies = []
+            series = []
+
+            for op in content.operatingList:
+                if not op.subjects:
+                    continue
+                op_title = str(op.title or "").lower()
+
+                is_movie_cat = any(kw in op_title for kw in movie_keywords)
+                is_series_cat = any(kw in op_title for kw in series_keywords)
+
+                for itm in op.subjects:
+                    sub_id = int(getattr(itm, "subjectId", 0) or 0)
+                    if not sub_id:
+                        continue
+                    sub_type = int(getattr(itm, "subjectType", 0) or 0)
+                    if sub_type == 1 or (is_movie_cat and not is_series_cat):
+                        if sub_id not in seen_movie_ids:
+                            seen_movie_ids.add(sub_id)
+                            movies.append(itm)
+                    elif sub_type == 2 or is_series_cat:
+                        if sub_id not in seen_series_ids:
+                            seen_series_ids.add(sub_id)
+                            series.append(itm)
+                    else:
+                        if sub_id not in seen_movie_ids:
+                            seen_movie_ids.add(sub_id)
+                            movies.append(itm)
+
+            # Keep top 40 unique items each for rich variety
+            movies = movies[:40]
+            series = series[:40]
 
             # 3. Process items and verify Hindi availability in parallel
             async def process_item(item):
                 title = str(item.title)
                 clean_title = title.replace("[Hindi]", "").replace("[English]", "").strip()
                 has_hindi = "hindi" in title.lower()
-                
-                # If title doesn't explicitly mention Hindi, check if a dubbed version exists
-                if not has_hindi:
-                    try:
-                        hindi_ver = await search_hindi_version(session, clean_title)
-                        if hindi_ver:
-                            has_hindi = True
-                    except Exception:
-                        pass
                 
                 # Parse release date to year
                 year = ""
@@ -98,12 +120,12 @@ async def update_trending_cache():
             print(f"[TrendingManager] Error updating cache: {e}")
             return False
 
-async def get_trending_list(category: str) -> list:
+async def get_trending_list(category: str, limit: int = 10, shuffle: bool = True) -> list:
     """
     Get cached trending items.
-    If the cache is older than 12 hours or completely empty, triggers a background refresh.
+    Returns a shuffled selection so that every call returns a different set of blockbusters!
     """
-    # Check cache time
+    import random
     cache_time_str = get_setting("trending_cache_time")
     cache_age = 9999999.0
     if cache_time_str:
@@ -112,14 +134,11 @@ async def get_trending_list(category: str) -> list:
         except ValueError:
             pass
 
-    # Retrieve from DB
     items = get_cached_trending_items(category)
     
-    # Trigger refresh if empty or expired (> 12 hours / 43200 seconds)
-    if not items or cache_age > 43200:
+    # Trigger refresh if empty or expired (> 6 hours / 21600 seconds)
+    if not items or cache_age > 21600:
         if not _update_lock.locked():
-            # If DB is empty, fetch synchronously so the user gets results immediately.
-            # Otherwise, fetch in background so response is instant.
             if not items:
                 print("[TrendingManager] Cache empty! Fetching trending content synchronously...")
                 await update_trending_cache()
@@ -128,4 +147,11 @@ async def get_trending_list(category: str) -> list:
                 print("[TrendingManager] Cache expired. Triggering background refresh...")
                 asyncio.create_task(update_trending_cache())
                 
-    return items
+    if not items:
+        return []
+
+    items_list = list(items)
+    if shuffle and len(items_list) > limit:
+        random.shuffle(items_list)
+
+    return items_list[:limit]

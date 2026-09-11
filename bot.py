@@ -178,7 +178,11 @@ async def send_styled(chat_id: int, text: str, markup: InlineKeyboardMarkup = No
     Returns the response JSON dict.
     """
     import aiohttp, json
-    token = Config.BOT_TOKEN
+    try:
+        from core.clone_manager import clone_manager
+        token = clone_manager.get_token_for_chat(chat_id)
+    except Exception:
+        token = Config.BOT_TOKEN
     endpoint = f"https://api.telegram.org/bot{token}/"
     payload = {
         "chat_id": chat_id,

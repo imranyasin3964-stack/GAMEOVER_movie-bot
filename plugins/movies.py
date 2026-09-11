@@ -377,7 +377,7 @@ async def show_loading_animation(chat_id: int, base_text: str, client=None) -> t
 
 
 async def get_trending_movies_panel(allowed_uid: int) -> tuple:
-    items = await get_trending_list("trending_movies")
+    items = await get_trending_list("trending_movies", limit=10, shuffle=True)
     caption = (
         f"{HEADER}"
         f"<b>Tᴏᴘ Tʀᴇɴᴅɪɴɢ Mᴏᴠɪᴇs</b>\n"
@@ -400,6 +400,7 @@ async def get_trending_movies_panel(allowed_uid: int) -> tuple:
             InlineKeyboardButton("Hɪɴᴅɪ Oɴʟʏ", callback_data=f"VOD|trend_hindi|{allowed_uid}", style="success")
         ],
         [
+            InlineKeyboardButton("Mᴏʀᴇ Mᴏᴠɪᴇs 🔄", callback_data=f"VOD|trend_movies|{allowed_uid}", style="success"),
             InlineKeyboardButton("Cʟᴏsᴇ", callback_data=f"VOD|trend_close|{allowed_uid}", style="danger")
         ]
     ])
@@ -407,7 +408,7 @@ async def get_trending_movies_panel(allowed_uid: int) -> tuple:
 
 
 async def get_trending_series_panel(allowed_uid: int) -> tuple:
-    items = await get_trending_list("trending_series")
+    items = await get_trending_list("trending_series", limit=10, shuffle=True)
     caption = (
         f"{HEADER}"
         f"<b>Tᴏᴘ Tʀᴇɴᴅɪɴɢ Sᴇʀɪᴇs</b>\n"
@@ -430,6 +431,7 @@ async def get_trending_series_panel(allowed_uid: int) -> tuple:
             InlineKeyboardButton("Hɪɴᴅɪ Oɴʟʏ", callback_data=f"VOD|trend_hindi|{allowed_uid}", style="success")
         ],
         [
+            InlineKeyboardButton("Mᴏʀᴇ Sᴇʀɪᴇs 🔄", callback_data=f"VOD|trend_series|{allowed_uid}", style="success"),
             InlineKeyboardButton("Cʟᴏsᴇ", callback_data=f"VOD|trend_close|{allowed_uid}", style="danger")
         ]
     ])
@@ -437,8 +439,9 @@ async def get_trending_series_panel(allowed_uid: int) -> tuple:
 
 
 async def get_trending_hindi_panel(allowed_uid: int) -> tuple:
-    movies = await get_trending_list("trending_movies")
-    series = await get_trending_list("trending_series")
+    import random
+    movies = await get_trending_list("trending_movies", limit=30, shuffle=True)
+    series = await get_trending_list("trending_series", limit=30, shuffle=True)
     
     hindi_items = []
     for m in movies:
@@ -448,16 +451,19 @@ async def get_trending_hindi_panel(allowed_uid: int) -> tuple:
         if s["has_hindi"]:
             hindi_items.append((s, "Series"))
             
+    random.shuffle(hindi_items)
+    selected_items = hindi_items[:10]
+
     caption = (
         f"{HEADER}"
         f"<b>Hɪɴᴅɪ Dᴜʙʙᴇᴅ Tʀᴇɴᴅɪɴɢ</b>\n"
         f"<i>Tap on a command to copy and search:</i>\n\n"
     )
     
-    if not hindi_items:
+    if not selected_items:
         caption += "<i>No Hindi dubbed trending titles found.</i>"
     else:
-        for idx, (item, type_lbl) in enumerate(hindi_items, 1):
+        for idx, (item, type_lbl) in enumerate(selected_items, 1):
             caption += (
                 f"{idx}. [{type_lbl}] <b>{item['title']}</b> ({item['release_date']}) - Rating: {item['rating']}\n"
                 f"   ‣ <code>/movie {item['title']}</code>\n\n"
@@ -469,6 +475,7 @@ async def get_trending_hindi_panel(allowed_uid: int) -> tuple:
             InlineKeyboardButton("Sʜᴏᴡ Sᴇʀɪᴇs", callback_data=f"VOD|trend_series|{allowed_uid}", style="primary")
         ],
         [
+            InlineKeyboardButton("Mᴏʀᴇ Hɪɴᴅɪ 🔄", callback_data=f"VOD|trend_hindi|{allowed_uid}", style="success"),
             InlineKeyboardButton("Cʟᴏsᴇ", callback_data=f"VOD|trend_close|{allowed_uid}", style="danger")
         ]
     ])
@@ -490,7 +497,7 @@ def register(app: Client):
             return
         user_id = user.id if user else 0
         print(f"[MOVIES Engine] Trending command triggered by user {user_id} in chat {chat_id}")
-        status_msg = await show_loading_animation(chat_id, "Fetching Trending List")
+        status_msg = await show_loading_animation(chat_id, "Tʀᴇɴᴅɪɴɢ Mᴏᴠɪᴇs Sᴇᴀʀᴄʜɪɴɢ", client=client)
         try:
             caption, keyboard = await get_trending_movies_panel(user_id)
             await safe_edit(status_msg, caption, keyboard)
@@ -973,16 +980,19 @@ def register(app: Client):
 
         # Handle trending actions first (they don't require VOD search session data)
         if action == "trend_movies":
+            await safe_edit(query.message, f"{HEADER}<b>Tʀᴇɴᴅɪɴɢ Mᴏᴠɪᴇs Sᴇᴀʀᴄʜɪɴɢ...</b>\n<i>Blockbusters fetch kiye ja rahe hain...</i>")
             caption, keyboard = await get_trending_movies_panel(allowed_uid)
             await safe_edit(query.message, caption, keyboard)
             return
 
         elif action == "trend_series":
+            await safe_edit(query.message, f"{HEADER}<b>Tʀᴇɴᴅɪɴɢ Sᴇʀɪᴇs Sᴇᴀʀᴄʜɪɴɢ...</b>\n<i>Top series fetch ki ja rahi hain...</i>")
             caption, keyboard = await get_trending_series_panel(allowed_uid)
             await safe_edit(query.message, caption, keyboard)
             return
 
         elif action == "trend_hindi":
+            await safe_edit(query.message, f"{HEADER}<b>Hɪɴᴅɪ Dᴜʙʙᴇᴅ Tʀᴇɴᴅɪɴɢ Sᴇᴀʀᴄʜɪɴɢ...</b>\n<i>Hindi blockbusters fetch kiye ja rahe hain...</i>")
             caption, keyboard = await get_trending_hindi_panel(allowed_uid)
             await safe_edit(query.message, caption, keyboard)
             return
