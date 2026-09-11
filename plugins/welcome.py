@@ -107,3 +107,97 @@ def register(app: Client):
             reply_markup=welcome_markup,
             parse_mode=enums.ParseMode.HTML
         )
+
+    @app.on_message(filters.command("welcome") & filters.group)
+    async def welcome_command(client: Client, message: Message):
+        chat_id = message.chat.id
+        user = message.from_user
+        user_id = user.id if user else 0
+        
+        from core.db import is_group_admin, is_group_welcome_enabled, set_group_welcome_enabled
+        admin_ok = await is_group_admin(client, chat_id, user_id)
+        if not admin_ok:
+            await message.reply_text(
+                f"{ROYAL_HEADER}<b>Sirf Group Admins ya Owner welcome messages customize kar sakte hain!</b>",
+                parse_mode=enums.ParseMode.HTML
+            )
+            return
+
+        chat_title = message.chat.title or ""
+
+        if len(message.command) > 1:
+            arg = message.command[1].lower().strip()
+            if arg in ("on", "enable", "true", "yes", "1"):
+                set_group_welcome_enabled(chat_id, True, title=chat_title)
+                await message.reply_text(
+                    f"{ROYAL_HEADER}✅ <b>Wᴇʟᴄᴏᴍᴇ Mᴇssᴀɢᴇs Eɴᴀʙʟᴇᴅ!</b>\n\nNaye members join hone par bot unhein welcome karega.",
+                    parse_mode=enums.ParseMode.HTML
+                )
+                return
+            elif arg in ("off", "disable", "false", "no", "0"):
+                set_group_welcome_enabled(chat_id, False, title=chat_title)
+                await message.reply_text(
+                    f"{ROYAL_HEADER}❌ <b>Wᴇʟᴄᴏᴍᴇ Mᴇssᴀɢᴇs Dɪsᴀʙʟᴇᴅ!</b>\n\nAb naye members join hone par welcome message nahi aayega.",
+                    parse_mode=enums.ParseMode.HTML
+                )
+                return
+
+        # Show interactive panel
+        is_on = is_group_welcome_enabled(chat_id)
+        status_text = "Eɴᴀʙʟᴇᴅ [ON]" if is_on else "Dɪsᴀʙʟᴇᴅ [OFF]"
+        btn_text = "Dɪsᴀʙʟᴇ Wᴇʟᴄᴏᴍᴇ" if is_on else "Eɴᴀʙʟᴇ Wᴇʟᴄᴏᴍᴇ"
+        btn_style = "danger" if is_on else "success"
+
+        caption = (
+            f"{ROYAL_HEADER}"
+            f"<b>Wᴇʟᴄᴏᴍᴇ Sᴇᴛᴛɪɴɢs</b>\n\n"
+            f"‣ <b>Gʀᴏᴜᴘ :</b> <code>{chat_title}</code>\n"
+            f"‣ <b>Sᴛᴀᴛᴜs :</b> <b>{status_text}</b>\n\n"
+            f"<i>Neeche diye gaye button par click karke welcome messages on ya off karein:</i>"
+        )
+        markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton(btn_text, callback_data=f"toggle_welcome_{chat_id}", style=btn_style)],
+            [InlineKeyboardButton("Cʟᴏsᴇ", callback_data="vcplay_close", style="danger")]
+        ])
+        await message.reply_text(caption, reply_markup=markup, parse_mode=enums.ParseMode.HTML)
+
+    @app.on_callback_query(filters.regex(r"^toggle_welcome_(-?\d+)"))
+    async def toggle_welcome_callback(client: Client, query: CallbackQuery):
+        chat_id = int(query.matches[0].group(1))
+        user = query.from_user
+        user_id = user.id if user else 0
+
+        from core.db import is_group_admin, is_group_welcome_enabled, set_group_welcome_enabled
+        admin_ok = await is_group_admin(client, chat_id, user_id)
+        if not admin_ok:
+            await query.answer("Sirf Group Admins ya Owner is setting ko change kar sakte hain!", show_alert=True)
+            return
+
+        current = is_group_welcome_enabled(chat_id)
+        new_val = not current
+        chat_title = query.message.chat.title if query.message and query.message.chat else ""
+        set_group_welcome_enabled(chat_id, new_val, title=chat_title)
+
+        status_text = "Eɴᴀʙʟᴇᴅ [ON]" if new_val else "Dɪsᴀʙʟᴇᴅ [OFF]"
+        btn_text = "Dɪsᴀʙʟᴇ Wᴇʟᴄᴏᴍᴇ" if new_val else "Eɴᴀʙʟᴇ Wᴇʟᴄᴏᴍᴇ"
+        btn_style = "danger" if new_val else "success"
+
+        alert_msg = "Welcome messages Enabled!" if new_val else "Welcome messages Disabled!"
+        await query.answer(alert_msg, show_alert=True)
+
+        caption = (
+            f"{ROYAL_HEADER}"
+            f"<b>Wᴇʟᴄᴏᴍᴇ Sᴇᴛᴛɪɴɢs</b>\n\n"
+            f"‣ <b>Gʀᴏᴜᴘ :</b> <code>{chat_title}</code>\n"
+            f"‣ <b>Sᴛᴀᴛᴜs :</b> <b>{status_text}</b>\n\n"
+            f"<i>Neeche diye gaye button par click karke welcome messages on ya off karein:</i>"
+        )
+        markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton(btn_text, callback_data=f"toggle_welcome_{chat_id}", style=btn_style)],
+            [InlineKeyboardButton("Cʟᴏsᴇ", callback_data="vcplay_close", style="danger")]
+        ])
+        try:
+            await query.message.edit_text(caption, reply_markup=markup, parse_mode=enums.ParseMode.HTML)
+        except Exception:
+            pass
+

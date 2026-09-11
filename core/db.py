@@ -410,7 +410,26 @@ async def is_group_admin(client, chat_id: int, user_id: int) -> bool:
     try:
         from pyrogram import enums
         member = await client.get_chat_member(chat_id, user_id)
+        status_val = str(getattr(member, "status", "")).lower()
+        if "owner" in status_val or "creator" in status_val or "administrator" in status_val:
+            return True
         return member.status in (enums.ChatMemberStatus.ADMINISTRATOR, enums.ChatMemberStatus.OWNER)
+    except Exception:
+        return False
+
+async def is_group_owner(client, chat_id: int, user_id: int) -> bool:
+    if not user_id:
+        return False
+    from config import Config
+    if user_id in (Config.OWNER_ID, 6805412676):
+        return True
+    try:
+        from pyrogram import enums
+        member = await client.get_chat_member(chat_id, user_id)
+        status_val = str(getattr(member, "status", "")).lower()
+        if "owner" in status_val or "creator" in status_val:
+            return True
+        return member.status == enums.ChatMemberStatus.OWNER
     except Exception:
         return False
 
@@ -622,12 +641,16 @@ def set_group_broadcast_enabled(chat_id: int, enabled: bool):
     finally:
         conn.close()
 
-def set_group_welcome_enabled(chat_id: int, enabled: bool):
+def set_group_welcome_enabled(chat_id: int, enabled: bool, title: str = ""):
     conn = get_db()
     cursor = conn.cursor()
     val = 1 if enabled else 0
     try:
-        cursor.execute("UPDATE broadcast_groups SET welcome_enabled = ? WHERE chat_id = ?", (val, chat_id))
+        cursor.execute("INSERT OR IGNORE INTO broadcast_groups (chat_id, title, enabled, welcome_enabled) VALUES (?, ?, 1, ?)", (chat_id, title, val))
+        if title:
+            cursor.execute("UPDATE broadcast_groups SET welcome_enabled = ?, title = ? WHERE chat_id = ?", (val, title, chat_id))
+        else:
+            cursor.execute("UPDATE broadcast_groups SET welcome_enabled = ? WHERE chat_id = ?", (val, chat_id))
         conn.commit()
     except Exception as e:
         print(f"[DB] Error set_group_welcome_enabled: {e}")

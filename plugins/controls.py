@@ -611,7 +611,6 @@ def register(app: Client):
                 cat = help_categories[data]
                 await callback_query.answer(cat["Title"])
                 if cat.get("CloneMarkup"):
-                    from config import Config
                     main_bot_user = Config.BOT_USERNAME or "Gameovermovie_bot"
                     clone_markup = InlineKeyboardMarkup([
                         [InlineKeyboardButton(
