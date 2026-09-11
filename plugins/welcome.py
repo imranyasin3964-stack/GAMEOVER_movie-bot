@@ -7,7 +7,7 @@ Music references removed — Movie Hub only.
 
 import os
 from pyrogram import Client, filters, enums
-from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
+from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 
 from config import Config
 from core.db import get_setting, set_setting
