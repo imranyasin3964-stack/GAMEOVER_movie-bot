@@ -290,7 +290,12 @@ async def select_vod_item(chat_id: int, item: SearchResultsItem, status_msg, use
     if not session_data.get("available_langs"):
         try:
             from core.vod_scraper import get_available_languages
-            available_langs = await get_available_languages(session_data["session"], clean_title, is_series=is_series)
+            available_langs = await get_available_languages(
+                session_data["session"],
+                clean_title,
+                is_series=is_series,
+                existing_items=session_data.get("search_results")
+            )
             if available_langs and len(available_langs) > 1:
                 session_data["available_langs"] = available_langs
                 caption, keyboard = get_language_panel(session_data)
@@ -351,7 +356,7 @@ async def show_loading_animation(chat_id: int, base_text: str, client=None) -> t
         sent = await _client.send_message(
             chat_id=chat_id,
             text=f"{HEADER}<b>{base_text}...</b>",
-            parse_mode="html",
+            parse_mode=enums.ParseMode.HTML,
             disable_web_page_preview=True
         )
         return (chat_id, sent.id)
@@ -752,7 +757,12 @@ def register(app: Client):
                 # Detect all available languages in parallel
                 try:
                     from core.vod_scraper import get_available_languages
-                    available_langs = await get_available_languages(session, clean_title, is_series=is_series)
+                    available_langs = await get_available_languages(
+                        session,
+                        clean_title,
+                        is_series=is_series,
+                        existing_items=items_sorted
+                    )
                     if available_langs and len(available_langs) > 1:
                         session_data["available_langs"] = available_langs
                         caption, keyboard = get_language_panel(session_data)

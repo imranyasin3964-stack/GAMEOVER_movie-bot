@@ -765,22 +765,51 @@ class PlayerManager:
                     async def progress_cb(pct, down, total):
                         nonlocal last_progress_edit
                         now = time.time()
-                        if now - last_progress_edit >= 4.0 or pct >= 99:
-                            last_progress_edit = now
-                            if status_mid and self.app:
-                                mb_down = down / (1024 * 1024)
+                        if pct < 100 and (now - last_progress_edit < 4.0):
+                            return
+                        if pct >= 100 and (now - last_progress_edit < 2.0):
+                            await asyncio.sleep(2.0 - (now - last_progress_edit))
+                        last_progress_edit = time.time()
+                        if status_mid and self.app:
+                            mb_down = down / (1024 * 1024)
+                            if total > 0:
                                 mb_tot = total / (1024 * 1024)
-                                try:
-                                    await self.app.edit_message_text(
-                                        chat_id=chat_id,
-                                        message_id=status_mid,
-                                        text=f"<b>Dᴏᴡɴʟᴏᴀᴅɪɴɢ Mᴏᴠɪᴇ :</b> <code>{pct}%</code>\n"
-                                             f"‣ <b>Tɪᴛʟᴇ :</b> <code>{song.title}</code>\n"
-                                             f"‣ <b>Sɪᴢᴇ :</b> <code>{mb_down:.1f} / {mb_tot:.1f} MB</code>",
-                                        disable_web_page_preview=True
-                                    )
-                                except Exception:
-                                    pass
+                                pct_val = min(100, int((down / total) * 100))
+                                size_str = f"{mb_down:.1f} / {mb_tot:.1f} MB"
+                            else:
+                                pct_val = pct
+                                size_str = f"{mb_down:.1f} MB"
+
+                            filled = min(10, max(0, int(pct_val / 10)))
+                            bar = "█" * filled + "░" * (10 - filled)
+
+                            if pct >= 100:
+                                prog_text = (
+                                    f"<b>Sᴛᴀʀᴛɪɴɢ Sᴛʀᴇᴀᴍ...</b>\n\n"
+                                    f"‣ <b>Tɪᴛʟᴇ :</b> <code>{song.title}</code>\n"
+                                    f"‣ <b>Sɪᴢᴇ :</b> <code>{size_str}</code>\n"
+                                    f"<i>Connecting to Video Chat, please wait...</i>"
+                                )
+                            else:
+                                prog_text = (
+                                    f"<b>Dᴏᴡɴʟᴏᴀᴅɪɴɢ Mᴏᴠɪᴇ</b>\n\n"
+                                    f"‣ <b>Tɪᴛʟᴇ :</b> <code>{song.title}</code>\n"
+                                    f"‣ <b>Pʀᴏɢʀᴇss :</b> <code>[{bar}] {pct_val}%</code>\n"
+                                    f"‣ <b>Sɪᴢᴇ :</b> <code>{size_str}</code>"
+                                )
+
+                            try:
+                                await self.app.edit_message_text(
+                                    chat_id=chat_id,
+                                    message_id=status_mid,
+                                    text=prog_text,
+                                    parse_mode=enums.ParseMode.HTML,
+                                    disable_web_page_preview=True
+                                )
+                            except Exception as edit_err:
+                                if "flood" in str(edit_err).lower():
+                                    print(f"[Player] FloodWait in progress_cb: {edit_err}")
+                                    await asyncio.sleep(3.5)
 
                     dl_path = await download_song(song, mode=mode, progress_callback=progress_cb)
                     if dl_path and os.path.exists(dl_path):
@@ -805,7 +834,7 @@ class PlayerManager:
             # ── PyTgCalls Media Stream Setup ──
             seek_val = self.current_seek_offset.get(chat_id, 0)
             seek_str = f"-ss {seek_val}" if seek_val > 0 else ""
-            ffmpeg_params = f"--base ---start -loglevel error -hide_banner {seek_str}".strip()
+            ffmpeg_params = f"-loglevel error -hide_banner {seek_str}".strip()
 
             # Target 720p @ 60 FPS video parameters as instructed
             vid_params = VideoParameters(width=1280, height=720, frame_rate=60)
@@ -1337,7 +1366,19 @@ async def edit_styled_text(chat_id: int, message_id: int, text: str, buttons=Non
                 f"https://api.telegram.org/bot{token_val}/editMessageText",
                 json=payload
             )
-            if resp.status != 200:
+            if resp.status == 429:
+                try:
+                    err_data = await resp.json()
+                    retry_after = err_data.get("parameters", {}).get("retry_after", 3)
+                    print(f"[Player] Telegram FloodWait in edit_styled_text: wait {retry_after}s")
+                    await asyncio.sleep(retry_after)
+                    await session.post(
+                        f"https://api.telegram.org/bot{token_val}/editMessageText",
+                        json=payload
+                    )
+                except Exception:
+                    pass
+            elif resp.status != 200:
                 # If message was video/photo, try editMessageCaption
                 cap_payload = dict(payload)
                 cap_payload["caption"] = cap_payload.pop("text")

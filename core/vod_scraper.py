@@ -460,18 +460,30 @@ async def resolve_stream_link(session: Session, item: SearchResultsItem, season:
     raise Exception("No active video streams found on servers.")
 
 
-async def get_available_languages(session: Session, clean_title: str, is_series: bool = True) -> list[dict]:
+async def get_available_languages(session: Session, clean_title: str, is_series: bool = True, existing_items: list = None) -> list[dict]:
     """
     Search MovieBox in parallel for all available language releases (Hindi, Japanese, English, Korean, etc.).
     Returns deduplicated list of available language items with pre-fetched seasons and episode counts.
-    Prevents sequel number mismatches.
+    Never misses Hindi because existing_items from initial search are inspected first.
     """
     import asyncio
     seen_subjects = set()
     lang_map = {}
-    clean_nums = extract_sequel_numbers(clean_title)
+
+    clean_words = set(clean_title.lower().split())
+
+    # Pre-assign session cookies so concurrent requests don't hit race conditions
+    try:
+        await session.ensure_cookies_are_assigned()
+    except Exception:
+        pass
+
+    all_candidate_items = list(existing_items or [])
 
     queries = [clean_title, f"{clean_title} Hindi", f"{clean_title} English"]
+    stem = re.sub(r'\b(class|season|s\d+)\b', '', clean_title, flags=re.IGNORECASE).strip()
+    if stem and stem.lower() != clean_title.lower():
+        queries.append(f"{stem} Hindi")
 
     async def fetch_search_res(q_text: str):
         try:
@@ -485,62 +497,61 @@ async def get_available_languages(session: Session, clean_title: str, is_series:
     search_results = await asyncio.gather(*(fetch_search_res(q) for q in queries))
 
     for res in search_results:
-        if not res or not res.items:
+        if res and res.items:
+            all_candidate_items.extend(res.items)
+
+    for it in all_candidate_items:
+        if it.subjectId in seen_subjects:
             continue
-        for it in res.items:
-            if it.subjectId in seen_subjects:
-                continue
-            seen_subjects.add(it.subjectId)
+        seen_subjects.add(it.subjectId)
 
-            it_is_series = it.subjectType == SubjectType.TV_SERIES or int(getattr(it, "subjectType", 1)) == 2
-            if is_series != it_is_series:
-                continue
+        it_is_series = it.subjectType == SubjectType.TV_SERIES or int(getattr(it, "subjectType", 1)) == 2
+        if is_series != it_is_series:
+            continue
 
-            it_clean = re.sub(r'\[.*?\]', '', it.title).strip()
-            it_clean = re.sub(r'\s+S\d+(-S\d+)?', '', it_clean, flags=re.IGNORECASE).strip()
+        it_clean = re.sub(r'\[.*?\]', '', it.title).strip()
+        it_clean = re.sub(r'\s+S\d+(-S\d+)?', '', it_clean, flags=re.IGNORECASE).strip()
 
-            # Sequel number conflict check
-            it_nums = extract_sequel_numbers(it_clean)
-            if clean_nums and (not it_nums or not clean_nums.issubset(it_nums)):
-                continue
+        it_words = set(it_clean.lower().split())
+        overlap = clean_words.intersection(it_words)
+        sim = difflib.SequenceMatcher(None, clean_title.lower(), it_clean.lower()).ratio()
 
-            sim = difflib.SequenceMatcher(None, clean_title.lower(), it_clean.lower()).ratio()
-            if sim < 0.60 and clean_title.lower() not in it_clean.lower() and it_clean.lower() not in clean_title.lower():
-                continue
+        if not overlap and sim < 0.45 and clean_title.lower() not in it_clean.lower() and it_clean.lower() not in clean_title.lower():
+            continue
 
-            t_lower = it.title.lower()
-            c_lower = getattr(it, "countryName", "").lower()
+        t_lower = it.title.lower()
+        c_lower = getattr(it, "countryName", "").lower()
 
-            if "hindi" in t_lower:
-                code, name = "hi", "Hindi"
-            elif "english" in t_lower:
-                code, name = "en", "English"
-            elif "japanese" in t_lower or ("japan" in c_lower and "hindi" not in t_lower):
-                code, name = "ja", "Japanese"
-            elif "korean" in t_lower or ("korea" in c_lower and "hindi" not in t_lower):
-                code, name = "ko", "Korean"
-            elif "spanish" in t_lower or ("spain" in c_lower and "hindi" not in t_lower):
-                code, name = "es", "Spanish"
-            elif "russian" in t_lower or ("russia" in c_lower):
-                code, name = "ru", "Russian"
-            elif "tamil" in t_lower:
-                code, name = "ta", "Tamil"
-            elif "telugu" in t_lower:
-                code, name = "te", "Telugu"
-            elif any(w in c_lower for w in ["united states", "united kingdom", "canada", "australia"]):
-                code, name = "en", "English"
-            else:
-                code, name = "orig", "Original"
+        if "hindi" in t_lower:
+            code, name = "hi", "Hindi"
+        elif "english" in t_lower:
+            code, name = "en", "English"
+        elif "japanese" in t_lower or ("japan" in c_lower and "hindi" not in t_lower):
+            code, name = "ja", "Japanese"
+        elif "korean" in t_lower or ("korea" in c_lower and "hindi" not in t_lower):
+            code, name = "ko", "Korean"
+        elif "spanish" in t_lower or ("spain" in c_lower and "hindi" not in t_lower):
+            code, name = "es", "Spanish"
+        elif "russian" in t_lower or ("russia" in c_lower):
+            code, name = "ru", "Russian"
+        elif "tamil" in t_lower:
+            code, name = "ta", "Tamil"
+        elif "telugu" in t_lower:
+            code, name = "te", "Telugu"
+        elif any(w in c_lower for w in ["united states", "united kingdom", "canada", "australia"]):
+            code, name = "en", "English"
+        else:
+            code, name = "orig", "Original"
 
-            if code not in lang_map:
-                lang_map[code] = {
-                    "code": code,
-                    "name": name,
-                    "item": it,
-                    "title": it.title,
-                    "seasons": [],
-                    "ep_count": 0
-                }
+        if code not in lang_map:
+            lang_map[code] = {
+                "code": code,
+                "name": name,
+                "item": it,
+                "title": it.title,
+                "seasons": [],
+                "ep_count": 0
+            }
 
     order = ["hi", "en", "ja", "ko", "es", "ru", "ta", "te", "orig"]
     sorted_langs = [lang_map[o] for o in order if o in lang_map]

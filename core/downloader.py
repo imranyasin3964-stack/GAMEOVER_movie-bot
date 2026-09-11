@@ -119,7 +119,7 @@ async def download_file(
 
                             if progress_callback:
                                 percent = int((downloaded / total_size) * 100) if total_size > 0 else 0
-                                if now - last_update_time >= 4.0 or (total_size > 0 and percent >= 99):
+                                if now - last_update_time >= 5.0:
                                     try:
                                         await progress_callback(percent, downloaded, total_size)
                                     except Exception:
