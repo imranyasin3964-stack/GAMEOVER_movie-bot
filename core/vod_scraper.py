@@ -472,9 +472,11 @@ async def get_available_languages(session: Session, clean_title: str, is_series:
 
     clean_words = set(clean_title.lower().split())
 
-    # Pre-assign session cookies so concurrent requests don't hit race conditions
+    # Pre-assign session cookies and user info so concurrent requests don't hit race conditions
     try:
         await session.ensure_cookies_are_assigned()
+        if not hasattr(session, "user_info") or not session.user_info:
+            await session._fetch_user_info()
     except Exception:
         pass
 
@@ -484,6 +486,8 @@ async def get_available_languages(session: Session, clean_title: str, is_series:
     stem = re.sub(r'\b(class|season|s\d+)\b', '', clean_title, flags=re.IGNORECASE).strip()
     if stem and stem.lower() != clean_title.lower():
         queries.append(f"{stem} Hindi")
+    if "class" not in clean_title.lower():
+        queries.append(f"{clean_title} Class Hindi")
 
     async def fetch_search_res(q_text: str):
         try:

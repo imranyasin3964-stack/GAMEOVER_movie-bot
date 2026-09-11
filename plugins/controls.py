@@ -67,15 +67,13 @@ def get_rich_control_buttons(chat_id: int, is_paused: bool = False, played_secs:
 
     played_str = format_seconds(played_secs)
     total_str = format_seconds(total_secs) if total_secs > 0 else "VOD"
-    bar_len = 10
+    bar_len = 8
     if total_secs > 0:
-        pct = played_secs / total_secs
-        idx = max(0, min(bar_len - 1, int(pct * bar_len)))
-        bar = ["─"] * bar_len
-        bar[idx] = "🔘"
-        bar_str = "".join(bar)
+        pct = min(1.0, max(0.0, played_secs / total_secs))
+        filled = min(bar_len, max(0, int(pct * bar_len)))
+        bar_str = "▰" * filled + "▱" * (bar_len - filled)
     else:
-        bar_str = "🔘─────────"
+        bar_str = "▰▰▱▱▱▱▱▱"
 
     progress_btn = InlineKeyboardButton(f"{played_str} {bar_str} {total_str}", callback_data=f"play_progress_{chat_id}")
     options_btn = InlineKeyboardButton("Oᴘᴛɪᴏɴs", callback_data=f"play_options_{chat_id}", style="primary")
@@ -682,11 +680,12 @@ def register(app: Client):
                     async def progress_cb(current, total):
                         nonlocal last_edit_time
                         now = time.time()
-                        if now - last_edit_time >= 3.5 or current == total:
+                        if now - last_edit_time >= 4.0 or current == total:
                             last_edit_time = now
                             pct = int(current * 100 / total)
-                            filled = int(pct / 10)
-                            bar = "[" + "■" * filled + "□" * (10 - filled) + "]"
+                            bar_len = 12
+                            filled = min(bar_len, max(0, int((pct / 100) * bar_len)))
+                            bar = "▰" * filled + "▱" * (bar_len - filled)
                             curr_mb = current / (1024 * 1024)
                             tot_mb = total / (1024 * 1024)
                             try:

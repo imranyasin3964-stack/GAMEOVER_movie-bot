@@ -780,8 +780,9 @@ class PlayerManager:
                                 pct_val = pct
                                 size_str = f"{mb_down:.1f} MB"
 
-                            filled = min(10, max(0, int(pct_val / 10)))
-                            bar = "█" * filled + "░" * (10 - filled)
+                            bar_len = 12
+                            filled = min(bar_len, max(0, int((pct_val / 100) * bar_len)))
+                            bar = "▰" * filled + "▱" * (bar_len - filled)
 
                             if pct >= 100:
                                 prog_text = (
@@ -794,7 +795,7 @@ class PlayerManager:
                                 prog_text = (
                                     f"<b>Dᴏᴡɴʟᴏᴀᴅɪɴɢ Mᴏᴠɪᴇ</b>\n\n"
                                     f"‣ <b>Tɪᴛʟᴇ :</b> <code>{song.title}</code>\n"
-                                    f"‣ <b>Pʀᴏɢʀᴇss :</b> <code>[{bar}] {pct_val}%</code>\n"
+                                    f"‣ <b>Pʀᴏɢʀᴇss :</b> <code>{bar} {pct_val}%</code>\n"
                                     f"‣ <b>Sɪᴢᴇ :</b> <code>{size_str}</code>"
                                 )
 
