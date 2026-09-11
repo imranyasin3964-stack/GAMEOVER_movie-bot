@@ -203,6 +203,12 @@ class PlayerManager:
         self.local_files: dict[int, str] = {}
         self.skip_votes: dict[int, set[int]] = {}
 
+        # Voice chat inactivity and mute monitors
+        self.vc_watchers: dict[int, asyncio.Task] = {}
+        self.chat_idle_seconds: dict[int, int] = {}
+        self.chat_mute_seconds: dict[int, int] = {}
+        self._assistant_id: Optional[int] = None
+
     # ────────────────────────── Init ────────────────────────────────────────
 
     async def init(self, assistant: Client, bot: Client = None):
@@ -210,6 +216,13 @@ class PlayerManager:
         self._assistant = assistant
         self.app = bot if bot else assistant
         self._pytg = PyTgCalls(assistant)
+
+        try:
+            me = await self._assistant.get_me()
+            self._assistant_id = me.id
+            print(f"[Player] Assistant client verified: {me.first_name} (ID: {self._assistant_id})")
+        except Exception as me_err:
+            print(f"[Player] Could not fetch assistant ID: {me_err}")
         
         # Start automatic 24-hour garbage collector
         asyncio.create_task(start_downloads_garbage_collector())
@@ -373,6 +386,7 @@ class PlayerManager:
             try:
                 chat_id = update.chat_id
                 self._cancel_idle_timer(chat_id)
+                self._cancel_vc_activity_monitor(chat_id)
                 self._active_chats.discard(chat_id)
                 old_local = self.local_files.pop(chat_id, None)
                 if old_local:
@@ -387,6 +401,7 @@ class PlayerManager:
             try:
                 chat_id = update.chat_id
                 self._cancel_idle_timer(chat_id)
+                self._cancel_vc_activity_monitor(chat_id)
                 queue_manager.clear(chat_id)
                 self._active_chats.discard(chat_id)
                 old_local = self.local_files.pop(chat_id, None)
@@ -395,10 +410,12 @@ class PlayerManager:
                     asyncio.create_task(delayed_clean_cached_file(old_local, delay=get_cleanup_delay(current_song)))
                 print(f"[Player] 🔇 Voice chat closed in chat {chat_id}. State cleared.")
                 try:
+                    from core.fonts import HEADER
                     await self.app.send_message(
                         chat_id,
-                        f"{WARN} <b>ᴠᴏɪᴄᴇ ᴄʜᴀᴛ ᴡᴀs ᴄʟᴏsᴇᴅ!</b>\n"
-                        f"» Queue cleared. Start the voice chat and use <code>/movie</code> to restart."
+                        f"{HEADER}<b><u>Vᴏɪᴄᴇ Cʜᴀᴛ Cʟᴏsᴇᴅ</u></b>\n\n"
+                        f"‣ <b>Sᴛᴀᴛᴜs :</b> <code>Qᴜᴇᴜᴇ Cʟᴇᴀʀᴇᴅ</code>\n"
+                        f"<i>Start the voice chat and use <code>/movie</code> to play.</i>"
                     )
                 except Exception:
                     pass
@@ -410,6 +427,7 @@ class PlayerManager:
             try:
                 chat_id = update.chat_id
                 self._cancel_idle_timer(chat_id)
+                self._cancel_vc_activity_monitor(chat_id)
                 queue_manager.clear(chat_id)
                 self._active_chats.discard(chat_id)
                 old_local = self.local_files.pop(chat_id, None)
@@ -418,10 +436,12 @@ class PlayerManager:
                     asyncio.create_task(delayed_clean_cached_file(old_local, delay=get_cleanup_delay(current_song)))
                 print(f"[Player] 🔇 Assistant left call in chat {chat_id}. State cleared.")
                 try:
+                    from core.fonts import HEADER
                     await self.app.send_message(
                         chat_id,
-                        f"{WARN} <b>ᴀssɪsᴛᴀɴᴛ ʟᴇғᴛ ᴛʜᴇ ᴠᴏɪᴄᴇ ᴄʜᴀᴛ!</b>\n"
-                        f"» Queue cleared. Use <code>/movie</code> to start again."
+                        f"{HEADER}<b><u>Assɪsᴛᴀɴᴛ Lᴇғᴛ Vᴏɪᴄᴇ Cʜᴀᴛ</u></b>\n\n"
+                        f"‣ <b>Sᴛᴀᴛᴜs :</b> <code>Qᴜᴇᴜᴇ Cʟᴇᴀʀᴇᴅ</code>\n"
+                        f"<i>Use <code>/movie</code> to start again.</i>"
                     )
                 except Exception:
                     pass
@@ -431,10 +451,138 @@ class PlayerManager:
         await self._pytg.start()
         print("[Player] ✅ PyTgCalls started!")
 
-    # ────────────────────────── Idle Timer ──────────────────────────────────
+    # ────────────────────────── Idle & VC Activity Monitor ──────────────────
+
+    def _start_vc_activity_monitor(self, chat_id: int):
+        """Starts background monitor for empty voice chat and muted assistant."""
+        prev = self.vc_watchers.pop(chat_id, None)
+        if prev and not prev.done():
+            prev.cancel()
+        self.vc_watchers[chat_id] = asyncio.create_task(self._vc_activity_monitor(chat_id))
+
+    def _cancel_vc_activity_monitor(self, chat_id: int):
+        """Cancels background monitor for chat."""
+        task = self.vc_watchers.pop(chat_id, None)
+        if task and not task.done():
+            task.cancel()
+        self.chat_idle_seconds.pop(chat_id, None)
+        self.chat_mute_seconds.pop(chat_id, None)
+
+    async def _vc_activity_monitor(self, chat_id: int):
+        """
+        Monitors active voice chat every 15 seconds:
+        1. If no human listeners are in the voice chat for 15 mins (configurable),
+           leaves voice chat and sends notification card.
+        2. If assistant is muted in the voice chat for 5 mins (configurable),
+           leaves voice chat and sends notification card.
+        """
+        from core.db import get_autoleave_settings
+        from core.fonts import HEADER
+
+        INTERVAL = 15  # check every 15 seconds
+
+        while True:
+            try:
+                await asyncio.sleep(INTERVAL)
+
+                # Check if stream is still playing in this chat
+                if chat_id not in self._active_chats or not queue_manager.is_playing(chat_id):
+                    break
+
+                settings = get_autoleave_settings(chat_id)
+                if not settings.get("enabled", True):
+                    self.chat_idle_seconds[chat_id] = 0
+                    self.chat_mute_seconds[chat_id] = 0
+                    continue
+
+                idle_limit_secs = settings.get("idle_mins", 15) * 60
+                mute_limit_secs = settings.get("mute_mins", 5) * 60
+
+                # Resolve assistant ID if not yet cached
+                if not self._assistant_id and self._assistant:
+                    try:
+                        asst_me = getattr(self._assistant, "me", None) or await self._assistant.get_me()
+                        if asst_me:
+                            self._assistant_id = asst_me.id
+                    except Exception:
+                        pass
+
+                # Query voice chat participants
+                participants = None
+                try:
+                    participants = await self._pytg.get_participants(chat_id)
+                except Exception:
+                    continue
+
+                if participants is None:
+                    continue
+
+                asst_id = self._assistant_id
+                other_listeners = [p for p in participants if p.user_id != asst_id]
+                assistant_p = next((p for p in participants if p.user_id == asst_id), None)
+
+                # ── Inactivity / No Listeners Check ──
+                if len(other_listeners) == 0:
+                    self.chat_idle_seconds[chat_id] = self.chat_idle_seconds.get(chat_id, 0) + INTERVAL
+                else:
+                    self.chat_idle_seconds[chat_id] = 0
+
+                # ── Muted Assistant Check ──
+                is_muted = False
+                if assistant_p:
+                    is_muted = bool(getattr(assistant_p, "muted", False) or getattr(assistant_p, "muted_by_admin", False))
+
+                if is_muted:
+                    self.chat_mute_seconds[chat_id] = self.chat_mute_seconds.get(chat_id, 0) + INTERVAL
+                else:
+                    self.chat_mute_seconds[chat_id] = 0
+
+                # Trigger Auto-Leave: No Listeners Found
+                if self.chat_idle_seconds.get(chat_id, 0) >= idle_limit_secs:
+                    idle_mins = settings.get("idle_mins", 15)
+                    print(f"[Player] Inactivity auto-leave triggered in {chat_id} ({idle_mins} mins no listeners)")
+
+                    if self.app:
+                        try:
+                            card = (
+                                f"{HEADER}<b><u>Lᴇᴀᴠɪɴɢ Vᴏɪᴄᴇ Cʜᴀᴛ</u></b>\n\n"
+                                f"‣ <b>Rᴇᴀsᴏɴ :</b> <code>Nᴏ Lɪsᴛᴇɴᴇʀs Fᴏᴜɴᴅ</code>\n"
+                                f"‣ <b>Iɴᴀᴄᴛɪᴠɪᴛʏ :</b> <code>{idle_mins} Mɪɴᴜᴛᴇs</code>"
+                            )
+                            await self.app.send_message(chat_id, card)
+                        except Exception as msg_err:
+                            print(f"[Player] Error sending idle leave message: {msg_err}")
+
+                    await self.stop(chat_id)
+                    break
+
+                # Trigger Auto-Leave: Assistant Muted
+                if self.chat_mute_seconds.get(chat_id, 0) >= mute_limit_secs:
+                    mute_mins = settings.get("mute_mins", 5)
+                    print(f"[Player] Mute auto-leave triggered in {chat_id} ({mute_mins} mins muted)")
+
+                    if self.app:
+                        try:
+                            card = (
+                                f"{HEADER}<b><u>Lᴇᴀᴠɪɴɢ Vᴏɪᴄᴇ Cʜᴀᴛ</u></b>\n\n"
+                                f"‣ <b>Rᴇᴀsᴏɴ :</b> <code>Mᴜᴛᴇᴅ Iɴ Vᴏɪᴄᴇ Cʜᴀᴛ</code>\n"
+                                f"‣ <b>Dᴜʀᴀᴛɪᴏɴ :</b> <code>{mute_mins} Mɪɴᴜᴛᴇs</code>"
+                            )
+                            await self.app.send_message(chat_id, card)
+                        except Exception as msg_err:
+                            print(f"[Player] Error sending mute leave message: {msg_err}")
+
+                    await self.stop(chat_id)
+                    break
+
+            except asyncio.CancelledError:
+                break
+            except Exception as loop_err:
+                print(f"[Player] Error in _vc_activity_monitor for chat {chat_id}: {loop_err}")
+                await asyncio.sleep(5)
 
     async def _idle_timeout_task(self, chat_id: int):
-        """Wait 5 minutes then leave the voice chat automatically."""
+        """Wait 5 minutes then leave the voice chat automatically when queue is finished."""
         try:
             await asyncio.sleep(300)  # 5 minutes
             print(f"[Player] 💤 5-minute idle reached for chat {chat_id}. Auto-leaving.")
@@ -445,10 +593,12 @@ class PlayerManager:
             self._active_chats.discard(chat_id)
             queue_manager.clear(chat_id)
             try:
+                from core.fonts import HEADER
                 await self.app.send_message(
                     chat_id,
-                    f"{SLEEP} <b>ɴᴏ sᴏɴɢs ᴘʟᴀʏɪɴɢ ғᴏʀ 5 ᴍɪɴᴜᴛᴇs.</b>\n"
-                    f"Leaving the voice chat to save resources. Bye! {WAVE}"
+                    f"{HEADER}<b><u>Lᴇᴀᴠɪɴɢ Vᴏɪᴄᴇ Cʜᴀᴛ</u></b>\n\n"
+                    f"‣ <b>Rᴇᴀsᴏɴ :</b> <code>Qᴜᴇᴜᴇ Fɪɴɪsʜᴇᴅ / Iɴᴀᴄᴛɪᴠᴇ</code>\n"
+                    f"‣ <b>Iɴᴀᴄᴛɪᴠɪᴛʏ :</b> <code>5 Mɪɴᴜᴛᴇs</code>"
                 )
             except Exception:
                 pass
@@ -932,6 +1082,7 @@ class PlayerManager:
 
             self._active_chats.add(chat_id)
             queue_manager.set_current(chat_id, song)
+            self._start_vc_activity_monitor(chat_id)
 
             # Send Now Playing card
             if send_card and self.app and not is_seek:
@@ -1003,6 +1154,7 @@ class PlayerManager:
                 pass
 
         self._cancel_idle_timer(chat_id)
+        self._cancel_vc_activity_monitor(chat_id)
         queue_manager.clear(chat_id)
         self._active_chats.discard(chat_id)
         
@@ -1295,6 +1447,8 @@ class PlayerManager:
                     
             for chat_id in list(self.idle_timers.keys()):
                 self._cancel_idle_timer(chat_id)
+            for chat_id in list(self.vc_watchers.keys()):
+                self._cancel_vc_activity_monitor(chat_id)
             self._active_chats.clear()
 
 

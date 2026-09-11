@@ -235,6 +235,16 @@ def init_db():
     if auth_cols and "timestamp" not in auth_cols:
         cursor.execute("ALTER TABLE auth_users ADD COLUMN timestamp REAL")
 
+    # Check if columns exist in chat_settings (migration for autoleave)
+    cursor.execute("PRAGMA table_info(chat_settings)")
+    cs_cols = [col[1] for col in cursor.fetchall()]
+    if cs_cols and "autoleave_enabled" not in cs_cols:
+        cursor.execute("ALTER TABLE chat_settings ADD COLUMN autoleave_enabled INTEGER DEFAULT 1")
+    if cs_cols and "autoleave_mins" not in cs_cols:
+        cursor.execute("ALTER TABLE chat_settings ADD COLUMN autoleave_mins INTEGER DEFAULT 15")
+    if cs_cols and "autoleave_mute_mins" not in cs_cols:
+        cursor.execute("ALTER TABLE chat_settings ADD COLUMN autoleave_mute_mins INTEGER DEFAULT 5")
+
     conn.commit()
     conn.close()
 
@@ -395,6 +405,55 @@ def set_play_mode(chat_id: int, mode: str):
             INSERT INTO chat_settings (chat_id, play_mode) VALUES (?, ?)
             ON CONFLICT(chat_id) DO UPDATE SET play_mode = excluded.play_mode
         """, (chat_id, mode))
+        conn.commit()
+    finally:
+        conn.close()
+
+def get_autoleave_settings(chat_id: int) -> dict:
+    """
+    Returns {'enabled': bool, 'idle_mins': int, 'mute_mins': int}.
+    If chat_id has no custom entry, falls back to global default (chat_id = 0) or defaults (15, 5, True).
+    """
+    conn = get_db()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT autoleave_enabled, autoleave_mins, autoleave_mute_mins FROM chat_settings WHERE chat_id = ?", (chat_id,))
+        row = cursor.fetchone()
+        if not row and chat_id != 0:
+            cursor.execute("SELECT autoleave_enabled, autoleave_mins, autoleave_mute_mins FROM chat_settings WHERE chat_id = 0")
+            row = cursor.fetchone()
+
+        if row:
+            enabled = bool(row["autoleave_enabled"] if row["autoleave_enabled"] is not None else 1)
+            idle_mins = int(row["autoleave_mins"] if row["autoleave_mins"] is not None else 15)
+            mute_mins = int(row["autoleave_mute_mins"] if row["autoleave_mute_mins"] is not None else 5)
+            return {"enabled": enabled, "idle_mins": max(1, idle_mins), "mute_mins": max(1, mute_mins)}
+
+        return {"enabled": True, "idle_mins": 15, "mute_mins": 5}
+    finally:
+        conn.close()
+
+def set_autoleave_settings(chat_id: int, enabled: bool = None, idle_mins: int = None, mute_mins: int = None):
+    """Updates auto-leave settings for a group (or chat_id=0 for global default)."""
+    curr = get_autoleave_settings(chat_id)
+    new_enabled = int(enabled if enabled is not None else curr["enabled"])
+    new_idle_mins = int(idle_mins if idle_mins is not None else curr["idle_mins"])
+    new_mute_mins = int(mute_mins if mute_mins is not None else curr["mute_mins"])
+
+    new_idle_mins = max(1, min(180, new_idle_mins))
+    new_mute_mins = max(1, min(60, new_mute_mins))
+
+    conn = get_db()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            INSERT INTO chat_settings (chat_id, autoleave_enabled, autoleave_mins, autoleave_mute_mins)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(chat_id) DO UPDATE SET
+                autoleave_enabled = excluded.autoleave_enabled,
+                autoleave_mins = excluded.autoleave_mins,
+                autoleave_mute_mins = excluded.autoleave_mute_mins
+        """, (chat_id, new_enabled, new_idle_mins, new_mute_mins))
         conn.commit()
     finally:
         conn.close()

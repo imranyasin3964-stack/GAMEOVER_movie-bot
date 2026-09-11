@@ -59,6 +59,9 @@ def get_admin_panel_markup() -> InlineKeyboardMarkup:
             InlineKeyboardButton("Cʟᴏɴᴇ Bᴏᴛs", callback_data="admin_clones_panel|0", style="primary")
         ],
         [
+            InlineKeyboardButton("Aᴜᴛᴏ-Lᴇᴀᴠᴇ Sᴇᴛᴛɪɴɢs", callback_data="admin_autoleave_panel", style="primary")
+        ],
+        [
             InlineKeyboardButton("Cʟᴏsᴇ", callback_data="admin_close", style="danger")
         ]
     ])
@@ -305,6 +308,86 @@ def get_playmode_panel(chat_id: int, current_mode: str) -> tuple[str, InlineKeyb
             InlineKeyboardButton("Cʟᴏsᴇ", callback_data=f"close_pm_{chat_id}", style="danger")
         ]
     ]
+    return caption, InlineKeyboardMarkup(buttons)
+
+
+def get_autoleave_panel(chat_id: int, is_admin_dashboard: bool = False) -> tuple[str, InlineKeyboardMarkup]:
+    from core.db import get_autoleave_settings
+    from core.fonts import HEADER, ADMIN_HEADER
+
+    settings = get_autoleave_settings(chat_id)
+    enabled = settings.get("enabled", True)
+    idle_mins = settings.get("idle_mins", 15)
+    mute_mins = settings.get("mute_mins", 5)
+
+    status_str = "Eɴᴀʙʟᴇᴅ (ON)" if enabled else "Dɪsᴀʙʟᴇᴅ (OFF)"
+    scope_str = "Gʟᴏʙᴀʟ Dᴇғᴀᴜʟᴛ" if chat_id == 0 else "Tʜɪs Gʀᴏᴜᴘ"
+
+    head = ADMIN_HEADER if is_admin_dashboard else HEADER
+    caption = (
+        f"{head}"
+        f"‣ <b>Aᴜᴛᴏ-Lᴇᴀᴠᴇ Sᴇᴛᴛɪɴɢs</b> ({scope_str})\n\n"
+        f"‣ <b>Sᴛᴀᴛᴜs :</b> <code>{status_str}</code>\n"
+        f"‣ <b>Nᴏ Lɪsᴛᴇɴᴇʀs Tɪᴍᴇᴏᴜᴛ :</b> <code>{idle_mins} Mɪɴᴜᴛᴇs</code>\n"
+        f"‣ <b>Mᴜᴛᴇᴅ Iɴ VC Tɪᴍᴇᴏᴜᴛ :</b> <code>{mute_mins} Mɪɴᴜᴛᴇs</code>\n\n"
+        f"<i>Agar voice chat mein koi na ho ya assistant bot mute ho jaye, to bot automatically stream stop karke VC se nikal jata hai.</i>"
+    )
+
+    prefix_dash = "dash_" if is_admin_dashboard else ""
+
+    # Status toggle button
+    status_btns = [
+        InlineKeyboardButton(
+            f"{'[Active] ' if enabled else ''}Eɴᴀʙʟᴇᴅ",
+            callback_data=f"al_{prefix_dash}set_1_{chat_id}",
+            style="success" if enabled else "primary"
+        ),
+        InlineKeyboardButton(
+            f"{'[Active] ' if not enabled else ''}Dɪsᴀʙʟᴇᴅ",
+            callback_data=f"al_{prefix_dash}set_0_{chat_id}",
+            style="danger" if not enabled else "primary"
+        ),
+    ]
+
+    # Idle duration buttons
+    idle_presets = [5, 10, 15, 20, 30]
+    idle_row = []
+    for m in idle_presets:
+        is_active = (idle_mins == m)
+        idle_row.append(
+            InlineKeyboardButton(
+                f"{'[Active] ' if is_active else ''}{m}m",
+                callback_data=f"al_{prefix_dash}idle_{m}_{chat_id}",
+                style="success" if is_active else "primary"
+            )
+        )
+
+    # Mute duration buttons
+    mute_presets = [2, 5, 10, 15]
+    mute_row = []
+    for m in mute_presets:
+        is_active = (mute_mins == m)
+        mute_row.append(
+            InlineKeyboardButton(
+                f"{'[Active] ' if is_active else ''}{m}m Mute",
+                callback_data=f"al_{prefix_dash}mute_{m}_{chat_id}",
+                style="success" if is_active else "primary"
+            )
+        )
+
+    buttons = [
+        status_btns,
+        [InlineKeyboardButton("— Iɴᴀᴄᴛɪᴠɪᴛʏ (Nᴏ Lɪsᴛᴇɴᴇʀs) —", callback_data="al_noop")],
+        idle_row,
+        [InlineKeyboardButton("— Mᴜᴛᴇᴅ Iɴ Vᴏɪᴄᴇ Cʜᴀᴛ —", callback_data="al_noop")],
+        mute_row
+    ]
+
+    if is_admin_dashboard:
+        buttons.append([InlineKeyboardButton("« Bᴀᴄᴋ", callback_data="admin_back", style="primary")])
+    else:
+        buttons.append([InlineKeyboardButton("Cʟᴏsᴇ", callback_data=f"al_close_{chat_id}", style="danger")])
+
     return caption, InlineKeyboardMarkup(buttons)
 
 
@@ -870,6 +953,18 @@ def register(app: Client):
                 message_id=query.message.id
             )
 
+        elif data == "admin_autoleave_panel":
+            await query.answer("Auto-Leave Settings")
+            admin_states[user_id] = None
+            caption, markup = get_autoleave_panel(0, is_admin_dashboard=True)
+            await send_styled(
+                client=client,
+                chat_id=chat_id,
+                text=caption,
+                markup=markup,
+                message_id=query.message.id
+            )
+
         elif data == "admin_noop":
             await query.answer()
 
@@ -1194,3 +1289,133 @@ def register(app: Client):
 
             caption, markup = get_playmode_panel(target_chat_id, new_mode)
             await send_styled(client=client, chat_id=target_chat_id, text=caption, markup=markup, message_id=query.message.id)
+
+    # ─── /autoleave, /leave, /idle command ───────────────────────────────────
+    @app.on_message(filters.command(["autoleave", "leave", "idle"]))
+    async def autoleave_cmd_handler(client: Client, message: Message):
+        chat_id = message.chat.id
+        user = message.from_user
+        user_id = user.id if user else 0
+
+        # Permissions check
+        if message.chat.type in (enums.ChatType.GROUP, enums.ChatType.SUPERGROUP):
+            admin_ok = await is_group_admin(client, chat_id, user_id)
+            if not admin_ok:
+                await message.reply_text("<b>Sirf Group Admins auto-leave settings change kar sakte hain!</b>")
+                return
+        else:
+            # Private message — only sudo / bot owner
+            if user_id not in (Config.OWNER_ID, 6805412676) and not is_sudo_user(user_id):
+                return
+            chat_id = 0  # Modify global default
+
+        args = message.command[1:] if len(message.command) > 1 else []
+        from core.db import get_autoleave_settings, set_autoleave_settings
+        from core.fonts import HEADER
+
+        if args:
+            sub = args[0].lower()
+            if sub in ("on", "enable", "yes", "true", "1"):
+                set_autoleave_settings(chat_id, enabled=True)
+                s = get_autoleave_settings(chat_id)
+                await message.reply_text(
+                    f"{HEADER}<b><u>Aᴜᴛᴏ-Lᴇᴀᴠᴇ Eɴᴀʙʟᴇᴅ</u></b>\n\n"
+                    f"‣ <b>Iɴᴀᴄᴛɪᴠɪᴛʏ Tɪᴍᴇᴏᴜᴛ :</b> <code>{s['idle_mins']} Mɪɴᴜᴛᴇs</code>\n"
+                    f"‣ <b>Mᴜᴛᴇ Tɪᴍᴇᴏᴜᴛ :</b> <code>{s['mute_mins']} Mɪɴᴜᴛᴇs</code>\n\n"
+                    f"<i>Bot will leave automatically when no listeners are present or when muted.</i>",
+                    parse_mode=enums.ParseMode.HTML
+                )
+                return
+            elif sub in ("off", "disable", "no", "false", "0"):
+                set_autoleave_settings(chat_id, enabled=False)
+                await message.reply_text(
+                    f"{HEADER}<b><u>Aᴜᴛᴏ-Lᴇᴀᴠᴇ Dɪsᴀʙʟᴇᴅ</u></b>\n\n"
+                    f"<i>Bot will NOT leave automatically on empty VC or mute.</i>",
+                    parse_mode=enums.ParseMode.HTML
+                )
+                return
+            elif sub in ("mute", "muted") and len(args) > 1:
+                try:
+                    mins = int(args[1])
+                    mins = max(1, min(60, mins))
+                    set_autoleave_settings(chat_id, enabled=True, mute_mins=mins)
+                    await message.reply_text(
+                        f"{HEADER}<b><u>Mᴜᴛᴇ Tɪᴍᴇᴏᴜᴛ Uᴘᴅᴀᴛᴇᴅ</u></b>\n\n"
+                        f"‣ <b>Nᴇᴡ Tɪᴍᴇᴏᴜᴛ :</b> <code>{mins} Mɪɴᴜᴛᴇs</code>\n"
+                        f"‣ <b>Sᴛᴀᴛᴜs :</b> <code>Eɴᴀʙʟᴇᴅ</code>",
+                        parse_mode=enums.ParseMode.HTML
+                    )
+                    return
+                except ValueError:
+                    pass
+            else:
+                try:
+                    mins = int(sub)
+                    mins = max(1, min(180, mins))
+                    set_autoleave_settings(chat_id, enabled=True, idle_mins=mins)
+                    await message.reply_text(
+                        f"{HEADER}<b><u>Iɴᴀᴄᴛɪᴠɪᴛʏ Tɪᴍᴇᴏᴜᴛ Uᴘᴅᴀᴛᴇᴅ</u></b>\n\n"
+                        f"‣ <b>Nᴇᴡ Tɪᴍᴇᴏᴜᴛ :</b> <code>{mins} Mɪɴᴜᴛᴇs</code>\n"
+                        f"‣ <b>Sᴛᴀᴛᴜs :</b> <code>Eɴᴀʙʟᴇᴅ</code>",
+                        parse_mode=enums.ParseMode.HTML
+                    )
+                    return
+                except ValueError:
+                    pass
+
+        caption, markup = get_autoleave_panel(chat_id, is_admin_dashboard=False)
+        await send_styled(client=client, chat_id=message.chat.id, text=caption, markup=markup)
+
+    @app.on_callback_query(filters.regex(r"^al_"))
+    async def autoleave_callback_handler(client: Client, query: CallbackQuery):
+        data = query.data
+        if data == "al_noop":
+            await query.answer()
+            return
+
+        chat_id = query.message.chat.id
+        user = query.from_user
+        user_id = user.id if user else 0
+
+        is_dash = "_dash_" in data
+
+        if is_dash:
+            if user_id not in (Config.OWNER_ID, 6805412676) and not is_sudo_user(user_id):
+                await query.answer("Sirf Bot Owner / Sudo access kar sakte hain!", show_alert=True)
+                return
+            target_chat_id = 0
+        else:
+            if query.message.chat.type in (enums.ChatType.GROUP, enums.ChatType.SUPERGROUP):
+                admin_ok = await is_group_admin(client, chat_id, user_id)
+                if not admin_ok:
+                    await query.answer("Sirf Group Admins auto-leave settings change kar sakte hain!", show_alert=True)
+                    return
+            target_chat_id = chat_id
+
+        from core.db import set_autoleave_settings
+
+        if data.startswith("al_close_"):
+            try:
+                await query.message.delete()
+            except Exception:
+                pass
+            return
+
+        parts = data.split("_")
+        action = parts[2] if is_dash else parts[1]
+        val = int(parts[3] if is_dash else parts[2])
+
+        if action == "set":
+            new_state = bool(val == 1)
+            set_autoleave_settings(target_chat_id, enabled=new_state)
+            state_text = "Enabled" if new_state else "Disabled"
+            await query.answer(f"Auto-Leave {state_text}!", show_alert=False)
+        elif action == "idle":
+            set_autoleave_settings(target_chat_id, enabled=True, idle_mins=val)
+            await query.answer(f"Inactivity timeout set to {val} minutes!", show_alert=False)
+        elif action == "mute":
+            set_autoleave_settings(target_chat_id, enabled=True, mute_mins=val)
+            await query.answer(f"Mute timeout set to {val} minutes!", show_alert=False)
+
+        caption, markup = get_autoleave_panel(target_chat_id, is_admin_dashboard=is_dash)
+        await send_styled(client=client, chat_id=chat_id, text=caption, markup=markup, message_id=query.message.id)

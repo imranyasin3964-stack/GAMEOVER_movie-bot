@@ -565,7 +565,10 @@ def register(app: Client):
                         "‣ <code>/pause</code> / <code>/resume</code> — Toggle stream\n"
                         "‣ <code>/stop</code> — Stop playback & clear queue\n"
                         "‣ <code>/loop [0-10]</code> — Set repeat count\n"
-                        "‣ <code>/voteskip</code> — Vote to skip"
+                        "‣ <code>/playmode</code> — User / Admin / Auth play mode\n"
+                        "‣ <code>/autoleave [on/off/mins]</code> — Auto-leave VC on idle/mute\n"
+                        "‣ <code>/welcome [on/off]</code> — Welcome message toggle\n"
+                        "‣ <code>/auth &lt;user&gt;</code> / <code>/unauth &lt;user&gt;</code> — Auth users"
                     )
                 },
                 "help_owner": {
